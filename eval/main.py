@@ -1,0 +1,58 @@
+import argparse
+import asyncio
+import json
+import os
+from dotenv import load_dotenv
+
+from .harness import run_eval
+
+
+def main():
+    load_dotenv()
+
+    parser = argparse.ArgumentParser(description="Run Grid Walker VLM evaluation")
+    parser.add_argument("--model", type=str, required=True, help="Model name (e.g., openai/gpt-4o)")
+    parser.add_argument("--seeds", type=str, default="0", help="Comma-separated seeds (e.g., 0,1,2)")
+    parser.add_argument("--grid-size", type=int, default=8, help="Grid size (default: 8)")
+    parser.add_argument("--blocks", type=int, default=3, help="Number of obstacle blocks (default: 3)")
+    parser.add_argument("--max-turns", type=int, default=50, help="Max turns per episode (default: 50)")
+    parser.add_argument("--output", type=str, default=None, help="Output JSON file path")
+    parser.add_argument("--verbose", action="store_true", help="Print progress")
+    parser.add_argument("--log-images", type=str, default=None, metavar="RUN_NAME",
+                        help="Save screenshots to outputs/RUN_NAME/seed_X/step_N.png")
+
+    args = parser.parse_args()
+
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        print("Error: OPENROUTER_API_KEY not set in environment or .env file")
+        return 1
+
+    seeds = [s.strip() for s in args.seeds.split(",")]
+
+    results = asyncio.run(run_eval(
+        model=args.model,
+        api_key=api_key,
+        seeds=seeds,
+        grid_size=args.grid_size,
+        blocks=args.blocks,
+        max_turns=args.max_turns,
+        verbose=args.verbose,
+        log_images=args.log_images
+    ))
+
+    output = results.to_dict()
+
+    if args.output:
+        with open(args.output, "w") as f:
+            json.dump(output, f, indent=2)
+        print(f"Results saved to {args.output}")
+    else:
+        print(json.dumps(output, indent=2))
+
+    print(f"\nSuccess rate: {results.success_rate:.1%}")
+    return 0
+
+
+if __name__ == "__main__":
+    exit(main())

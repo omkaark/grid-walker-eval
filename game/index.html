@@ -1,0 +1,967 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GRID WALKER</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0a0a0f;
+    color: #e0f0ff;
+    font-family: 'Share Tech Mono', monospace;
+    overflow: hidden;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Top Menu Bar ── */
+  #menu-bar {
+    background: #0d0d1a;
+    border-bottom: 1px solid #00e5ff22;
+    padding: 8px 20px;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    z-index: 10;
+    flex-shrink: 0;
+  }
+
+  #menu-title {
+    font-family: 'Orbitron', sans-serif;
+    font-weight: 900;
+    font-size: 1rem;
+    letter-spacing: 0.3em;
+    color: #00e5ff;
+    text-shadow: 0 0 16px #00e5ff88;
+    margin-right: 10px;
+  }
+
+  .menu-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .menu-label {
+    font-size: 0.65rem;
+    color: #00e5ff88;
+    letter-spacing: 0.15em;
+  }
+
+  .size-btn {
+    background: transparent;
+    border: 1px solid #00e5ff33;
+    color: #00e5ff99;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.6rem;
+    letter-spacing: 0.1em;
+    padding: 4px 10px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .size-btn:hover {
+    background: #00e5ff15;
+    border-color: #00e5ff66;
+    color: #00e5ff;
+  }
+
+  .size-btn.active {
+    background: #00e5ff22;
+    border-color: #00e5ff;
+    color: #00e5ff;
+    box-shadow: 0 0 8px #00e5ff44;
+  }
+
+  #restart-btn {
+    margin-left: auto;
+    background: transparent;
+    border: 1px solid #ff6644aa;
+    color: #ff8866;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.6rem;
+    letter-spacing: 0.15em;
+    padding: 5px 14px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  #restart-btn:hover {
+    background: #ff441122;
+    border-color: #ff6644;
+    box-shadow: 0 0 10px #ff444422;
+  }
+
+  .seed-input {
+    background: transparent;
+    border: 1px solid #00e5ff33;
+    border-bottom-color: #00e5ff66;
+    color: #e0f0ff;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.75rem;
+    padding: 3px 8px;
+    width: 90px;
+    outline: none;
+    caret-color: #00e5ff;
+    transition: border-color 0.2s;
+  }
+
+  .seed-input:focus { border-color: #00e5ff88; }
+  .seed-input::placeholder { color: #00e5ff33; }
+
+  .seed-input.narrow { width: 52px; }
+
+  /* ── Canvas ── */
+  #canvas-container {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+  }
+
+  canvas {
+    display: block;
+    width: 100% !important;
+    height: 100% !important;
+  }
+
+  /* ── HUD ── */
+  #hud {
+    position: absolute;
+    top: 14px;
+    left: 18px;
+    font-size: 0.7rem;
+    color: #00e5ff99;
+    line-height: 2;
+    z-index: 10;
+    pointer-events: none;
+  }
+
+  #hud span { color: #00e5ff; }
+
+  #log {
+    position: absolute;
+    top: 14px;
+    right: 18px;
+    width: 210px;
+    font-size: 0.68rem;
+    color: #00e5ff55;
+    line-height: 1.9;
+    text-align: right;
+    z-index: 10;
+    pointer-events: none;
+  }
+
+  .log-entry { transition: opacity 1.2s; }
+  .log-entry.fade { opacity: 0; }
+
+  /* ── Input Bar ── */
+  #input-bar {
+    background: #0d0d1a;
+    border-top: 1px solid #00e5ff22;
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+    z-index: 10;
+  }
+
+  #prompt-label {
+    color: #00e5ff;
+    font-size: 0.8rem;
+    letter-spacing: 0.1em;
+  }
+
+  #cmd-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid #00e5ff44;
+    color: #e0f0ff;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.88rem;
+    padding: 4px 8px;
+    outline: none;
+    caret-color: #00e5ff;
+    transition: border-color 0.2s;
+  }
+
+  #cmd-input:focus { border-bottom-color: #00e5ff; }
+  #cmd-input::placeholder { color: #00e5ff33; }
+  #cmd-input:disabled { opacity: 0.35; cursor: not-allowed; }
+
+  #exec-btn {
+    background: transparent;
+    border: 1px solid #00e5ff55;
+    color: #00e5ff;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.62rem;
+    letter-spacing: 0.15em;
+    padding: 6px 14px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  #exec-btn:hover { background: #00e5ff15; border-color: #00e5ff; box-shadow: 0 0 10px #00e5ff44; }
+  #exec-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  /* ── Error ── */
+  #error-msg {
+    position: absolute;
+    bottom: 68px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #ff003322;
+    border: 1px solid #ff003366;
+    color: #ff6688;
+    font-size: 0.75rem;
+    padding: 6px 18px;
+    z-index: 20;
+    opacity: 0;
+    transition: opacity 0.3s;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+
+  #error-msg.show { opacity: 1; }
+
+  /* ── Win Modal ── */
+  #modal-overlay {
+    position: absolute;
+    inset: 0;
+    background: #00000099;
+    backdrop-filter: blur(5px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.5s;
+  }
+
+  #modal-overlay.visible {
+    opacity: 1;
+    pointer-events: all;
+  }
+
+  #modal {
+    background: #090912;
+    border: 1px solid #00e5ff55;
+    box-shadow: 0 0 80px #00e5ff1a, inset 0 0 40px #00001133;
+    padding: 44px 52px;
+    max-width: 420px;
+    width: 90%;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+  }
+
+  #modal::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, #ffd700, transparent);
+  }
+
+  #modal::after {
+    content: '';
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, #ffd70066, transparent);
+  }
+
+  #modal-trophy {
+    font-size: 3.4rem;
+    margin-bottom: 10px;
+    filter: drop-shadow(0 0 20px #ffd700aa);
+    animation: pulse-gold 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse-gold {
+    0%, 100% { filter: drop-shadow(0 0 16px #ffd700aa); }
+    50%       { filter: drop-shadow(0 0 30px #ffd700ff); }
+  }
+
+  #modal-title {
+    font-family: 'Orbitron', sans-serif;
+    font-weight: 900;
+    font-size: 1.55rem;
+    letter-spacing: 0.3em;
+    color: #ffd700;
+    text-shadow: 0 0 24px #ffd70099;
+    margin-bottom: 6px;
+  }
+
+  #modal-subtitle {
+    font-size: 0.68rem;
+    color: #00e5ff55;
+    letter-spacing: 0.25em;
+    margin-bottom: 28px;
+  }
+
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #ffffff09;
+    padding: 10px 0;
+    font-size: 0.75rem;
+  }
+
+  .stat-label { color: #00e5ff66; letter-spacing: 0.12em; }
+  .stat-value { color: #e0f0ff; font-size: 1.05rem; }
+  .stat-value.gold { color: #ffd700; text-shadow: 0 0 10px #ffd70055; }
+
+  #modal-play-again {
+    margin-top: 26px;
+    background: transparent;
+    border: 1px solid #ffd70055;
+    color: #ffd700;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.68rem;
+    letter-spacing: 0.2em;
+    padding: 10px 28px;
+    cursor: pointer;
+    transition: all 0.2s;
+    width: 100%;
+  }
+
+  #modal-play-again:hover {
+    background: #ffd70011;
+    border-color: #ffd700;
+    box-shadow: 0 0 24px #ffd70033;
+  }
+</style>
+</head>
+<body>
+
+<!-- ── Menu Bar ── -->
+<div id="menu-bar">
+  <span id="menu-title">GRID WALKER</span>
+  <div class="menu-group">
+    <span class="menu-label">GRID SIZE</span>
+    <button class="size-btn" data-size="8">8×8</button>
+    <button class="size-btn active" data-size="16">16×16</button>
+    <button class="size-btn" data-size="24">24×24</button>
+    <button class="size-btn" data-size="32">32×32</button>
+  </div>
+  <div class="menu-group">
+    <span class="menu-label">SEED</span>
+    <input id="seed-input" class="seed-input" type="text" value="0" placeholder="seed" spellcheck="false" autocomplete="off" />
+  </div>
+  <div class="menu-group">
+    <span class="menu-label">BLOCKS</span>
+    <input id="blocks-input" class="seed-input narrow" type="number" value="3" min="0" max="20" />
+  </div>
+  <button id="restart-btn">↺ RESTART</button>
+</div>
+
+<!-- ── 3D Canvas ── -->
+<div id="canvas-container">
+  <canvas id="game-canvas"></canvas>
+
+  <div id="hud">
+    POS &nbsp;&nbsp;<span id="hud-pos">0, 0</span><br>
+    STEPS &nbsp;&nbsp;<span id="hud-steps">0</span><br>
+    TRIES &nbsp;&nbsp;<span id="hud-tries">0</span><br>
+    SEED &nbsp;&nbsp;&nbsp;<span id="hud-seed">0</span><br>
+    <span style="color:#00e5ff33;font-size:0.6rem;letter-spacing:0.08em">W=MOVE &middot; A/D=TURN</span>
+  </div>
+
+  <div id="log"></div>
+  <div id="error-msg"></div>
+
+  <!-- Win Modal -->
+  <div id="modal-overlay">
+    <div id="modal">
+      <div id="modal-trophy">🏆</div>
+      <div id="modal-title">GOAL REACHED</div>
+      <div id="modal-subtitle">MISSION COMPLETE</div>
+      <div class="stat-row">
+        <span class="stat-label">COMMANDS ISSUED</span>
+        <span class="stat-value" id="stat-tries">—</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">CELLS TRAVERSED</span>
+        <span class="stat-value" id="stat-steps">—</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">GRID SIZE</span>
+        <span class="stat-value" id="stat-grid">—</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">SEED</span>
+        <span class="stat-value" id="stat-seed">—</span>
+      </div>
+      <div class="stat-row" style="border:none">
+        <span class="stat-label">EFFICIENCY SCORE</span>
+        <span class="stat-value gold" id="stat-score">—</span>
+      </div>
+      <button id="modal-play-again">PLAY AGAIN</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Input Bar ── -->
+<div id="input-bar">
+  <span id="prompt-label">&gt;_</span>
+  <input id="cmd-input" type="text" placeholder="forward 3 · left · right  (W=move, A/D=turn)" autocomplete="off" spellcheck="false" />
+  <button id="exec-btn">EXEC</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ═══════════════════════════════════════════════════════
+//  CONFIG
+// ═══════════════════════════════════════════════════════
+const CELL = 2;
+const DIRS      = ['north','east','south','west'];
+const ANGLES    = [Math.PI, Math.PI/2, 0, -Math.PI/2];
+const DELTAS    = { north:[0,-1], east:[1,0], south:[0,1], west:[-1,0] };
+
+let BOARD = 16;
+
+// ═══════════════════════════════════════════════════════
+//  SEEDED PRNG  (mulberry32 — fast, high quality)
+// ═══════════════════════════════════════════════════════
+function hashSeed(str) {
+  // Convert any string seed to a 32-bit integer via simple hash
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h || 1;
+}
+
+function makePRNG(seedStr) {
+  let s = hashSeed(String(seedStr));
+  return function() {
+    s += 0x6d2b79f5;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+let rng = makePRNG('0'); // default seed
+
+// ═══════════════════════════════════════════════════════
+//  THREE.JS CORE
+// ═══════════════════════════════════════════════════════
+const canvas = document.getElementById('game-canvas');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x050508);
+
+const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 500);
+
+// ── Lights (persistent)
+const ambient = new THREE.AmbientLight(0x112244, 1.2);
+scene.add(ambient);
+
+const dirLight = new THREE.DirectionalLight(0x00e5ff, 1.0);
+dirLight.castShadow = true;
+dirLight.shadow.mapSize.set(1024, 1024);
+scene.add(dirLight);
+
+const overheadLight = new THREE.PointLight(0x0066ff, 1.5, 120);
+overheadLight.position.set(0, 14, 0);
+scene.add(overheadLight);
+
+// ── World group (rebuilt per game)
+const worldGroup = new THREE.Group();
+scene.add(worldGroup);
+
+// ═══════════════════════════════════════════════════════
+//  PLAYER (persistent)
+// ═══════════════════════════════════════════════════════
+const playerGroup = new THREE.Group();
+scene.add(playerGroup);
+
+const bodyMesh = new THREE.Mesh(
+  new THREE.BoxGeometry(0.6, 1.0, 0.4),
+  new THREE.MeshStandardMaterial({ color:0x00e5ff, emissive:0x004466, roughness:0.4, metalness:0.6 })
+);
+bodyMesh.position.y = 0.5; bodyMesh.castShadow = true;
+playerGroup.add(bodyMesh);
+
+const headMesh = new THREE.Mesh(
+  new THREE.BoxGeometry(0.45, 0.45, 0.45),
+  new THREE.MeshStandardMaterial({ color:0x00ccff, emissive:0x003355, roughness:0.3, metalness:0.7 })
+);
+headMesh.position.y = 1.22; headMesh.castShadow = true;
+playerGroup.add(headMesh);
+
+const eyesMesh = new THREE.Mesh(
+  new THREE.BoxGeometry(0.28, 0.08, 0.05),
+  new THREE.MeshStandardMaterial({ color:0xffffff, emissive:0x00ffff, emissiveIntensity:3 })
+);
+eyesMesh.position.set(0, 1.24, 0.23);
+playerGroup.add(eyesMesh);
+
+const playerLight = new THREE.PointLight(0x00e5ff, 1.2, 6);
+playerLight.position.set(0, 1.5, 0);
+playerGroup.add(playerLight);
+
+// Cell indicator
+const indicator = new THREE.Mesh(
+  new THREE.PlaneGeometry(CELL * 0.85, CELL * 0.85),
+  new THREE.MeshBasicMaterial({ color:0x00e5ff, transparent:true, opacity:0.12, depthWrite:false })
+);
+indicator.rotation.x = -Math.PI / 2;
+indicator.position.y = 0.03;
+scene.add(indicator);
+
+// ═══════════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════════
+let state = {};
+
+// Animation
+let animQueue = [], animating = false;
+let animT = 0;
+let animFrom = new THREE.Vector3(), animTo = new THREE.Vector3();
+let animRotFrom = 0, animRotTo = 0, animType = '';
+const ANIM_DUR = 0.18;
+
+// Camera
+let camPos = new THREE.Vector3(), camTarget = new THREE.Vector3();
+let cameraInitialized = false;
+
+// ═══════════════════════════════════════════════════════
+//  HELPERS
+// ═══════════════════════════════════════════════════════
+function gridToWorld(gx, gz) {
+  const H = BOARD * CELL / 2;
+  return new THREE.Vector3(gx * CELL - H + CELL/2, 0, gz * CELL - H + CELL/2);
+}
+
+function isObstacle(gx, gz) { return state.obstacles.has(`${gx},${gz}`); }
+
+function randomCell(excluded) {
+  const ex = new Set(excluded);
+  let gx, gz;
+  do { gx = Math.floor(rng()*BOARD); gz = Math.floor(rng()*BOARD); }
+  while (ex.has(`${gx},${gz}`));
+  return [gx, gz];
+}
+
+// ═══════════════════════════════════════════════════════
+//  BUILD WORLD
+// ═══════════════════════════════════════════════════════
+function buildWorld() {
+  while (worldGroup.children.length) worldGroup.remove(worldGroup.children[0]);
+
+  const H = BOARD * CELL / 2;
+
+  // Update shadow / fog / lights
+  const sc = dirLight.shadow.camera;
+  const ext = H + 6;
+  sc.left=-ext; sc.right=ext; sc.top=ext; sc.bottom=-ext; sc.far=160; sc.near=0.5;
+  sc.updateProjectionMatrix();
+  dirLight.position.set(H*0.6, 18, H*0.6);
+  overheadLight.distance = H * 5;
+  scene.fog = new THREE.Fog(0x050508, H*1.6, H*5);
+
+  // Tiles
+  const mLight = new THREE.MeshStandardMaterial({color:0x1a2a3a, roughness:0.8, metalness:0.2});
+  const mDark  = new THREE.MeshStandardMaterial({color:0x0a0f18, roughness:0.9, metalness:0.1});
+  const mGoal  = new THREE.MeshStandardMaterial({color:0xffd700, emissive:0x886600, roughness:0.3, metalness:0.6});
+  const tGeo   = new THREE.BoxGeometry(CELL, 0.2, CELL);
+
+  for (let r = 0; r < BOARD; r++) {
+    for (let c = 0; c < BOARD; c++) {
+      const isGoal = c===state.goalX && r===state.goalZ;
+      const m = new THREE.Mesh(tGeo, isGoal ? mGoal : ((r+c)%2===0 ? mLight : mDark));
+      m.position.set(c*CELL - H + CELL/2, -0.1, r*CELL - H + CELL/2);
+      m.receiveShadow = true;
+      worldGroup.add(m);
+    }
+  }
+
+  // Goal effects
+  const gWP = gridToWorld(state.goalX, state.goalZ);
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(CELL*0.36, CELL*0.5, 36),
+    new THREE.MeshBasicMaterial({color:0xffd700, transparent:true, opacity:0.65, side:THREE.DoubleSide, depthWrite:false})
+  );
+  ring.rotation.x = -Math.PI/2;
+  ring.position.set(gWP.x, 0.05, gWP.z);
+  ring.userData.goalRing = true;
+  worldGroup.add(ring);
+
+  const goalPointLight = new THREE.PointLight(0xffd700, 2.5, CELL*5);
+  goalPointLight.position.set(gWP.x, 1.2, gWP.z);
+  worldGroup.add(goalPointLight);
+
+  // Grid lines
+  const grid = new THREE.GridHelper(BOARD*CELL, BOARD, 0x00e5ff0a, 0x00e5ff0a);
+  grid.position.y = 0.02;
+  worldGroup.add(grid);
+
+  // Walls
+  const wMat = new THREE.MeshStandardMaterial({color:0x00e5ff, emissive:0x002233, transparent:true, opacity:0.35, roughness:0.3});
+  const wH = 2.2, wGeo = new THREE.BoxGeometry(BOARD*CELL+0.24, wH, 0.12);
+  [{pos:[0,wH/2,-H],rot:[0,0,0]},{pos:[0,wH/2,H],rot:[0,0,0]},
+   {pos:[-H,wH/2,0],rot:[0,Math.PI/2,0]},{pos:[H,wH/2,0],rot:[0,Math.PI/2,0]}]
+  .forEach(({pos,rot})=>{
+    const m=new THREE.Mesh(wGeo,wMat); m.position.set(...pos); m.rotation.set(...rot); worldGroup.add(m);
+  });
+
+  // Obstacles
+  const obsMat = new THREE.MeshStandardMaterial({color:0xff3311, emissive:0x550000, roughness:0.5, metalness:0.4});
+  const topMat = new THREE.MeshStandardMaterial({color:0xff8800, emissive:0x442200, roughness:0.4});
+
+  for (const key of state.obstacles) {
+    const [ox,oz] = key.split(',').map(Number);
+    const wp = gridToWorld(ox, oz);
+
+    const base = new THREE.Mesh(new THREE.BoxGeometry(CELL*0.9, 1.7, CELL*0.9), obsMat);
+    base.castShadow = true; base.receiveShadow = true;
+    base.position.set(wp.x, 0.85, wp.z);
+    worldGroup.add(base);
+
+    const top = new THREE.Mesh(new THREE.BoxGeometry(CELL*0.92, 0.15, CELL*0.92), topMat);
+    top.position.set(wp.x, 1.72, wp.z);
+    worldGroup.add(top);
+
+    // X mark on front face
+    const xLight = new THREE.PointLight(0xff3300, 0.9, CELL*3.5);
+    xLight.position.set(wp.x, 1.4, wp.z);
+    worldGroup.add(xLight);
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  INIT / RESET
+// ═══════════════════════════════════════════════════════
+function initGame() {
+  // Read seed and block count from inputs
+  const seedVal   = document.getElementById('seed-input').value.trim() || '0';
+  const numBlocks = Math.max(0, Math.min(Math.floor(BOARD*BOARD/4), parseInt(document.getElementById('blocks-input').value, 10) || 0));
+
+  // Re-seed the PRNG — same seed always produces same layout
+  rng = makePRNG(seedVal);
+
+  const startX = Math.floor(BOARD/2), startZ = Math.floor(BOARD/2);
+  const reserved = [`${startX},${startZ}`];
+  const obsSet = new Set();
+
+  for (let i = 0; i < numBlocks; i++) {
+    const [ox,oz] = randomCell(reserved);
+    obsSet.add(`${ox},${oz}`);
+    reserved.push(`${ox},${oz}`);
+  }
+
+  const [gx,gz] = randomCell(reserved);
+
+  state = {
+    gridX: startX, gridZ: startZ,
+    facing: 0,
+    totalSteps: 0, totalTries: 0,
+    won: false,
+    obstacles: obsSet,
+    goalX: gx, goalZ: gz,
+  };
+
+  animQueue = []; animating = false;
+  buildWorld();
+  snapPlayer(true);
+  updateHUD();
+  hideModal();
+  enableInput();
+  document.getElementById('cmd-input').focus();
+}
+
+// ═══════════════════════════════════════════════════════
+//  PLAYER SNAP
+// ═══════════════════════════════════════════════════════
+function snapPlayer(immediate) {
+  const wp = gridToWorld(state.gridX, state.gridZ);
+  playerGroup.position.set(wp.x, 0, wp.z);
+  playerGroup.rotation.y = ANGLES[state.facing];
+  indicator.position.set(wp.x, 0.03, wp.z);
+  if (immediate) { updateCamera(true); }
+}
+
+function updateHUD() {
+  const cx = state.gridX - Math.floor(BOARD/2);
+  const cz = state.gridZ - Math.floor(BOARD/2);
+  document.getElementById('hud-pos').textContent   = `${cx}, ${cz}`;
+  document.getElementById('hud-steps').textContent = state.totalSteps;
+  document.getElementById('hud-tries').textContent = state.totalTries;
+  document.getElementById('hud-seed').textContent  = document.getElementById('seed-input').value.trim() || '0';
+}
+
+// ═══════════════════════════════════════════════════════
+//  CAMERA
+// ═══════════════════════════════════════════════════════
+const CAM_DIST = 5, CAM_HEIGHT = 3.5;
+
+function updateCamera(immediate) {
+  const pp = playerGroup.position;
+  const ang = playerGroup.rotation.y;
+  const ox = -Math.sin(ang) * CAM_DIST;
+  const oz = -Math.cos(ang) * CAM_DIST;
+  const desired  = new THREE.Vector3(pp.x+ox, pp.y+CAM_HEIGHT, pp.z+oz);
+  const lookAtPt = new THREE.Vector3(pp.x, pp.y+1.2, pp.z);
+  if (immediate || !cameraInitialized) {
+    camPos.copy(desired); camTarget.copy(lookAtPt);
+    cameraInitialized = true;
+  } else {
+    camPos.lerp(desired, 0.07);
+    camTarget.lerp(lookAtPt, 0.1);
+  }
+  camera.position.copy(camPos);
+  camera.lookAt(camTarget);
+}
+
+// ═══════════════════════════════════════════════════════
+//  ANIMATION
+// ═══════════════════════════════════════════════════════
+function nextAnim() {
+  if (animQueue.length === 0) { animating = false; checkWin(); return; }
+  const step = animQueue.shift();
+  animType = step.type; animT = 0;
+  animFrom.copy(playerGroup.position);
+  if (step.type === 'move') {
+    animTo.copy(gridToWorld(step.gx, step.gz));
+    animRotFrom = animRotTo = playerGroup.rotation.y;
+  } else {
+    animTo.copy(playerGroup.position);
+    animRotFrom = step.from; animRotTo = step.to;
+  }
+  animating = true;
+}
+
+function easeInOut(t) { return t<0.5 ? 2*t*t : -1+(4-2*t)*t; }
+
+// ═══════════════════════════════════════════════════════
+//  WIN
+// ═══════════════════════════════════════════════════════
+function checkWin() {
+  if (state.gridX===state.goalX && state.gridZ===state.goalZ && !state.won) {
+    state.won = true;
+    disableInput();
+    setTimeout(showWinModal, 600);
+  }
+}
+
+function showWinModal() {
+  const minDist = Math.abs(state.goalX-Math.floor(BOARD/2)) + Math.abs(state.goalZ-Math.floor(BOARD/2));
+  const eff = Math.max(0, Math.round(100*(minDist+1)/(state.totalSteps+1)));
+  const seedVal = document.getElementById('seed-input').value.trim() || '0';
+  document.getElementById('stat-tries').textContent  = state.totalTries;
+  document.getElementById('stat-steps').textContent  = state.totalSteps;
+  document.getElementById('stat-grid').textContent   = `${BOARD}×${BOARD}`;
+  document.getElementById('stat-seed').textContent   = seedVal;
+  document.getElementById('stat-score').textContent  = eff + '%';
+  document.getElementById('modal-overlay').classList.add('visible');
+}
+
+function hideModal() {
+  document.getElementById('modal-overlay').classList.remove('visible');
+}
+
+// ═══════════════════════════════════════════════════════
+//  COMMAND PARSER
+// ═══════════════════════════════════════════════════════
+const ALIASES = {
+  forward:'forward',
+  left:'left',
+  right:'right'
+};
+
+function parseAndExecute(raw) {
+  if (state.won) return false;
+  const parts = raw.trim().toLowerCase().split(/\s+/);
+  const dir = ALIASES[parts[0]];
+  if (!dir) return false;
+
+  if (dir === 'left' || dir === 'right') {
+    const newFacing = dir === 'left' ? (state.facing+3)%4 : (state.facing+1)%4;
+    let from = ANGLES[state.facing], to = ANGLES[newFacing];
+    let diff = to - from;
+    while (diff >  Math.PI) diff -= Math.PI*2;
+    while (diff < -Math.PI) diff += Math.PI*2;
+    animQueue.push({ type:'turn', from, to: from+diff });
+    state.facing = newFacing;
+    updateHUD();
+    if (!animating) nextAnim();
+    return true;
+  }
+
+  // ── Move action (forward only) ────────────────────────
+  const n = parseInt(parts[1], 10);
+  if (isNaN(n) || n < 1) return false;
+
+  const steps = Math.min(n, BOARD * 2);
+  state.totalTries++;
+
+  const [dx,dz] = DELTAS[DIRS[state.facing]];
+  for (let i = 0; i < steps; i++) {
+    const nx = Math.max(0, Math.min(BOARD-1, state.gridX+dx));
+    const nz = Math.max(0, Math.min(BOARD-1, state.gridZ+dz));
+    if (isObstacle(nx, nz)) break;
+    state.gridX = nx; state.gridZ = nz;
+    state.totalSteps++;
+    animQueue.push({ type:'move', gx:nx, gz:nz });
+  }
+
+  updateHUD();
+  if (!animating) nextAnim();
+  return true;
+}
+
+// ═══════════════════════════════════════════════════════
+//  INPUT UI
+// ═══════════════════════════════════════════════════════
+let errTimer;
+const errEl = document.getElementById('error-msg');
+function showError(msg) {
+  errEl.textContent = msg; errEl.classList.add('show');
+  clearTimeout(errTimer);
+  errTimer = setTimeout(()=>errEl.classList.remove('show'), 2500);
+}
+
+function enableInput()  { document.getElementById('cmd-input').disabled=false; document.getElementById('exec-btn').disabled=false; }
+function disableInput() { document.getElementById('cmd-input').disabled=true;  document.getElementById('exec-btn').disabled=true;  }
+
+const logEl = document.getElementById('log');
+function addLog(text) {
+  const el = document.createElement('div');
+  el.className='log-entry'; el.textContent=text;
+  logEl.appendChild(el);
+  if (logEl.children.length > 7) logEl.removeChild(logEl.firstChild);
+  setTimeout(()=>el.classList.add('fade'), 3500);
+  setTimeout(()=>el.remove(), 5000);
+}
+
+function execute() {
+  const inp = document.getElementById('cmd-input');
+  const val = inp.value.trim();
+  if (!val) return;
+  if (parseAndExecute(val)) { addLog('> '+val); inp.value=''; }
+  else showError('Syntax: forward {steps} · left · right');
+}
+
+document.getElementById('exec-btn').addEventListener('click', execute);
+document.getElementById('cmd-input').addEventListener('keydown', e=>{ if(e.key==='Enter') execute(); });
+
+// ── WASD + Arrow Keys ─────────────────────────────────
+const WASD_MAP = {
+  w:'forward', arrowup:'forward',
+  a:'left',    arrowleft:'left',
+  d:'right',   arrowright:'right',
+};
+
+document.addEventListener('keydown', e => {
+  if (document.activeElement === document.getElementById('cmd-input')) return;
+  if (state.won) return;
+  const dir = WASD_MAP[e.key.toLowerCase()];
+  if (!dir) return;
+  e.preventDefault();
+  const cmd = (dir === 'left' || dir === 'right') ? dir : dir + ' 1';
+  if (parseAndExecute(cmd)) addLog('> ' + cmd);
+});
+
+// Size buttons
+document.querySelectorAll('.size-btn').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    document.querySelectorAll('.size-btn').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    BOARD = parseInt(btn.dataset.size, 10);
+    initGame();
+  });
+});
+
+document.getElementById('restart-btn').addEventListener('click', initGame);
+document.getElementById('modal-play-again').addEventListener('click', initGame);
+
+// Seed / blocks inputs: apply on Enter
+['seed-input', 'blocks-input'].forEach(id => {
+  document.getElementById(id).addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.target.blur(); initGame(); }
+  });
+  // Also re-init on blur so changing and clicking restart works naturally
+  document.getElementById(id).addEventListener('change', () => initGame());
+});
+
+// ═══════════════════════════════════════════════════════
+//  RESIZE
+// ═══════════════════════════════════════════════════════
+function resize() {
+  const c = document.getElementById('canvas-container');
+  renderer.setSize(c.clientWidth, c.clientHeight, false);
+  camera.aspect = c.clientWidth / c.clientHeight;
+  camera.updateProjectionMatrix();
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ═══════════════════════════════════════════════════════
+//  RENDER LOOP
+// ═══════════════════════════════════════════════════════
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.1);
+  const t0 = Date.now();
+
+  // Idle bob
+  const bob = Math.sin(t0*0.003)*0.04;
+  bodyMesh.position.y  = 0.5  + bob;
+  headMesh.position.y  = 1.22 + bob;
+  eyesMesh.position.y  = 1.24 + bob;
+  playerLight.intensity = 1.0 + Math.sin(t0*0.005)*0.3;
+
+  // Rotate goal ring
+  worldGroup.children.forEach(obj=>{ if(obj.userData.goalRing) obj.rotation.z += dt*1.1; });
+
+  if (animating) {
+    animT += dt / ANIM_DUR;
+    if (animT >= 1) {
+      animT = 1;
+      if (animType==='move') {
+        playerGroup.position.copy(animTo);
+        playerGroup.position.y = 0;
+        indicator.position.set(animTo.x, 0.03, animTo.z);
+      } else {
+        playerGroup.rotation.y = animRotTo;
+      }
+      nextAnim();
+    } else {
+      const e = easeInOut(animT);
+      if (animType==='move') {
+        playerGroup.position.lerpVectors(animFrom, animTo, e);
+        playerGroup.position.y = Math.sin(e*Math.PI)*0.28;
+        indicator.position.set(playerGroup.position.x, 0.03, playerGroup.position.z);
+      } else {
+        playerGroup.rotation.y = animRotFrom + (animRotTo-animRotFrom)*e;
+      }
+    }
+  }
+
+  updateCamera(false);
+  renderer.render(scene, camera);
+}
+
+initGame();
+animate();
+</script>
+</body>
+</html>
