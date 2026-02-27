@@ -2,8 +2,8 @@ import os
 from dataclasses import dataclass, field
 from playwright.async_api import async_playwright, Page
 
-from .browser import setup_game, capture_screenshot, get_state, execute_command
-from .vlm import VLMClient, parse_response
+from ..common.browser import setup_game, capture_screenshot, get_state, execute_command
+from ..common.vlm import VLMClient, parse_response
 
 
 @dataclass
@@ -74,42 +74,24 @@ async def run_episode(
     verbose: bool = False,
     log_images_dir: str | None = None
 ) -> EpisodeResult:
-    """Run a single episode of the game."""
     await setup_game(page, grid_size, seed, blocks)
     vlm.reset()
 
     history: list[str] = []
 
     for turn in range(1, max_turns + 1):
-        # Screenshot
         screenshot = await capture_screenshot(page)
 
-        # Save screenshot if logging enabled
         if log_images_dir:
             img_path = os.path.join(log_images_dir, f"step_{turn}.png")
             with open(img_path, "wb") as f:
                 f.write(screenshot)
 
-        # Get state
-        state = await get_state(page)
-
-        # Check if already won
-        if state["won"]:
-            return EpisodeResult(
-                seed=seed,
-                success=True,
-                turns=turn - 1,
-                steps=state["steps"],
-                history=history
-            )
-
-        # Query VLM
-        response = await vlm.query(screenshot, turn)
+        response = vlm.query(screenshot, turn)
 
         if verbose:
             print(f"  Turn {turn}: VLM response: {response[:80]}...")
 
-        # Parse response
         command = parse_response(response)
 
         if command is None:
@@ -119,7 +101,6 @@ async def run_episode(
                 print(f"  Turn {turn}: Invalid response")
             continue
 
-        # Execute command
         success = await execute_command(page, command)
 
         if success:
@@ -131,7 +112,6 @@ async def run_episode(
             if verbose:
                 print(f"  Turn {turn}: Command failed '{command}'")
 
-        # Check win after action
         state = await get_state(page)
         if state["won"]:
             return EpisodeResult(
@@ -139,10 +119,10 @@ async def run_episode(
                 success=True,
                 turns=turn,
                 steps=state["steps"],
-                history=history
+                history=history,
+                reason="game_won"
             )
 
-    # Max turns exceeded
     state = await get_state(page)
     return EpisodeResult(
         seed=seed,
@@ -164,7 +144,6 @@ async def run_eval(
     verbose: bool = False,
     log_images: str | None = None
 ) -> EvalResults:
-    """Run evaluation across multiple seeds."""
     vlm = VLMClient(model=model, api_key=api_key)
     results = EvalResults(
         model=model,
@@ -176,12 +155,12 @@ async def run_eval(
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
+        await page.set_viewport_size({ "width": 256, "height": 256 })
 
         for seed in seeds:
             if verbose:
                 print(f"Running seed: {seed}")
 
-            # Set up image logging directory for this seed
             log_images_dir = None
             if log_images:
                 log_images_dir = os.path.join("outputs", log_images, f"seed_{seed}")

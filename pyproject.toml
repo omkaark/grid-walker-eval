@@ -1,7 +1,7 @@
 [project]
 name = "grid-walker-eval"
 version = "0.1.0"
-description = "Add your description here"
+description = "Grid Walker RL environment and Eval"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []

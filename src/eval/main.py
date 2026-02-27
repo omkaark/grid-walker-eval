@@ -10,12 +10,12 @@ from .harness import run_eval
 def main():
     load_dotenv()
 
-    parser = argparse.ArgumentParser(description="Run Grid Walker VLM evaluation")
-    parser.add_argument("--model", type=str, required=True, help="Model name (e.g., openai/gpt-4o)")
-    parser.add_argument("--seeds", type=str, default="0", help="Comma-separated seeds (e.g., 0,1,2)")
-    parser.add_argument("--grid-size", type=int, default=8, help="Grid size (default: 8)")
-    parser.add_argument("--blocks", type=int, default=3, help="Number of obstacle blocks (default: 3)")
-    parser.add_argument("--max-turns", type=int, default=50, help="Max turns per episode (default: 50)")
+    parser = argparse.ArgumentParser(description="Grid Walker Eval")
+    parser.add_argument("--model", type=str, required=True, help="Model name")
+    parser.add_argument("--seeds", type=str, default="0", help="Comma-separated values like 0,1,2")
+    parser.add_argument("--grid-size", type=int, default=8, help="Grid size")
+    parser.add_argument("--blocks", type=int, default=3, help="Number of obstacle blocks")
+    parser.add_argument("--max-turns", type=int, default=50, help="Max turns per episode")
     parser.add_argument("--output", type=str, default=None, help="Output JSON file path")
     parser.add_argument("--verbose", action="store_true", help="Print progress")
     parser.add_argument("--log-images", type=str, default=None, metavar="RUN_NAME",

@@ -368,7 +368,7 @@
 <div id="canvas-container">
   <canvas id="game-canvas"></canvas>
 
-  <div id="hud">
+  <div id="hud" style="display: none;">
     POS &nbsp;&nbsp;<span id="hud-pos">0, 0</span><br>
     STEPS &nbsp;&nbsp;<span id="hud-steps">0</span><br>
     TRIES &nbsp;&nbsp;<span id="hud-tries">0</span><br>
@@ -428,6 +428,7 @@ const ANGLES    = [Math.PI, Math.PI/2, 0, -Math.PI/2];
 const DELTAS    = { north:[0,-1], east:[1,0], south:[0,1], west:[-1,0] };
 
 let BOARD = 16;
+let ANIM_DUR = 0.18;
 
 // ═══════════════════════════════════════════════════════
 //  SEEDED PRNG  (mulberry32 — fast, high quality)
@@ -469,15 +470,15 @@ scene.background = new THREE.Color(0x050508);
 const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 500);
 
 // ── Lights (persistent)
-const ambient = new THREE.AmbientLight(0x112244, 1.2);
+const ambient = new THREE.AmbientLight(0xffffff, 0.6);
 scene.add(ambient);
 
-const dirLight = new THREE.DirectionalLight(0x00e5ff, 1.0);
+const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
 dirLight.castShadow = true;
 dirLight.shadow.mapSize.set(1024, 1024);
 scene.add(dirLight);
 
-const overheadLight = new THREE.PointLight(0x0066ff, 1.5, 120);
+const overheadLight = new THREE.PointLight(0xffffff, 1.0, 120);
 overheadLight.position.set(0, 14, 0);
 scene.add(overheadLight);
 
@@ -535,7 +536,7 @@ let animQueue = [], animating = false;
 let animT = 0;
 let animFrom = new THREE.Vector3(), animTo = new THREE.Vector3();
 let animRotFrom = 0, animRotTo = 0, animType = '';
-const ANIM_DUR = 0.18;
+
 
 // Camera
 let camPos = new THREE.Vector3(), camTarget = new THREE.Vector3();
@@ -577,8 +578,8 @@ function buildWorld() {
   scene.fog = new THREE.Fog(0x050508, H*1.6, H*5);
 
   // Tiles
-  const mLight = new THREE.MeshStandardMaterial({color:0x1a2a3a, roughness:0.8, metalness:0.2});
-  const mDark  = new THREE.MeshStandardMaterial({color:0x0a0f18, roughness:0.9, metalness:0.1});
+  const mLight = new THREE.MeshStandardMaterial({color:0xffffff, roughness:0.8, metalness:0.2});
+  const mDark  = new THREE.MeshStandardMaterial({color:0x000000, roughness:0.9, metalness:0.1});
   const mGoal  = new THREE.MeshStandardMaterial({color:0xffd700, emissive:0x886600, roughness:0.3, metalness:0.6});
   const tGeo   = new THREE.BoxGeometry(CELL, 0.2, CELL);
 
@@ -613,7 +614,7 @@ function buildWorld() {
   worldGroup.add(grid);
 
   // Walls
-  const wMat = new THREE.MeshStandardMaterial({color:0x00e5ff, emissive:0x002233, transparent:true, opacity:0.35, roughness:0.3});
+  const wMat = new THREE.MeshStandardMaterial({color:0xffffff, emissive:0x222222, transparent:true, opacity:0.35, roughness:0.3});
   const wH = 2.2, wGeo = new THREE.BoxGeometry(BOARD*CELL+0.24, wH, 0.12);
   [{pos:[0,wH/2,-H],rot:[0,0,0]},{pos:[0,wH/2,H],rot:[0,0,0]},
    {pos:[-H,wH/2,0],rot:[0,Math.PI/2,0]},{pos:[H,wH/2,0],rot:[0,Math.PI/2,0]}]
@@ -623,7 +624,7 @@ function buildWorld() {
 
   // Obstacles
   const obsMat = new THREE.MeshStandardMaterial({color:0xff3311, emissive:0x550000, roughness:0.5, metalness:0.4});
-  const topMat = new THREE.MeshStandardMaterial({color:0xff8800, emissive:0x442200, roughness:0.4});
+  const topMat = new THREE.MeshStandardMaterial({color:0xff3311, emissive:0x550000, roughness:0.4});
 
   for (const key of state.obstacles) {
     const [ox,oz] = key.split(',').map(Number);
@@ -933,9 +934,9 @@ function animate() {
   worldGroup.children.forEach(obj=>{ if(obj.userData.goalRing) obj.rotation.z += dt*1.1; });
 
   if (animating) {
-    animT += dt / ANIM_DUR;
-    if (animT >= 1) {
-      animT = 1;
+      animT += dt / ANIM_DUR;
+      if (animT >= 1) {
+        animT = 1;
       if (animType==='move') {
         playerGroup.position.copy(animTo);
         playerGroup.position.y = 0;
@@ -943,15 +944,15 @@ function animate() {
       } else {
         playerGroup.rotation.y = animRotTo;
       }
-      nextAnim();
-    } else {
-      const e = easeInOut(animT);
-      if (animType==='move') {
-        playerGroup.position.lerpVectors(animFrom, animTo, e);
-        playerGroup.position.y = Math.sin(e*Math.PI)*0.28;
-        indicator.position.set(playerGroup.position.x, 0.03, playerGroup.position.z);
+        nextAnim();
       } else {
-        playerGroup.rotation.y = animRotFrom + (animRotTo-animRotFrom)*e;
+        const e = easeInOut(animT);
+        if (animType==='move') {
+          playerGroup.position.lerpVectors(animFrom, animTo, e);
+          playerGroup.position.y = Math.sin(e*Math.PI)*0.28;
+          indicator.position.set(playerGroup.position.x, 0.03, playerGroup.position.z);
+        } else {
+          playerGroup.rotation.y = animRotFrom + (animRotTo-animRotFrom)*e;
       }
     }
   }
