@@ -136,15 +136,16 @@ async def run_episode(
 
 async def run_eval(
     model: str,
+    base_url: str,
     api_key: str,
     seeds: list[str],
     grid_size: int = 8,
-    blocks: int = 3,
+    blocks: int = 0,
     max_turns: int = 50,
     verbose: bool = False,
     log_images: str | None = None
 ) -> EvalResults:
-    vlm = VLMClient(model=model, api_key=api_key)
+    vlm = VLMClient(model=model, base_url=base_url, api_key=api_key)
     results = EvalResults(
         model=model,
         grid_size=grid_size,

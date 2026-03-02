@@ -4,4 +4,19 @@ version = "0.1.0"
 description = "Grid Walker RL environment and Eval"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "playwright",
+    "openai",
+    "peft>=0.17.1",
+    "python-dotenv",
+    "qwen-vl-utils>=0.0.11",
+    "torch>=2.10.0",
+    "torchvision>=0.25.0",
+    "wandb>=0.25.0",
+    "transformers>=5.2.0",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true

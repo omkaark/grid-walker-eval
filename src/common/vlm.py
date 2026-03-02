@@ -46,11 +46,24 @@ def parse_response(response: str) -> str | None:
     if response is None:
         return None
 
-    match = re.search(r'`([^`]+)`', response)
+    text = response.strip().lower()
+
+    # Prefer strict backtick format when present.
+    match = re.search(r"`([^`]+)`", text)
+    candidates: list[str] = []
     if match:
-        cmd = match.group(1).strip().lower()
-        # Validate format
-        if cmd in ['left', 'right'] or re.match(r'^forward\s+\d+$', cmd):
-            return cmd
+        candidates.append(match.group(1).strip())
+    candidates.append(text)
+
+    for candidate in candidates:
+        # Accept exact control commands anywhere in text.
+        if re.search(r"\bleft\b", candidate):
+            return "left"
+        if re.search(r"\bright\b", candidate):
+            return "right"
+
+        m = re.search(r"\bforward\s+(\d+)\b", candidate)
+        if m:
+            return f"forward {int(m.group(1))}"
 
     return None
