@@ -14,7 +14,7 @@ python -m src.eval.main --model Qwen/Qwen3-VL-2B-Instruct --base-url http://loca
 
 Start vLLM:
 ```bash
-VLLM_SERVER_DEV_MODE=1 vllm serve Qwen/Qwen3-VL-2B-Instruct --dtype bfloat16 --max-model-len 4096 --gpu-memory-utilization 0.95 --enable-sleep-mode --enable-lora --lora-modules gw=adapter_policy/checkpoint_update_60
+VLLM_SERVER_DEV_MODE=1 vllm serve Qwen/Qwen3-VL-2B-Instruct --dtype bfloat16 --max-model-len 4096 --gpu-memory-utilization 0.95 --enable-sleep-mode --enable-lora --lora-modules policy=adapter_policy/rl
 ```
 
 Generate synthetic data:
@@ -29,5 +29,5 @@ python -m src.train.finetune --dataset-dir dataset/simpleds --output-dir adapter
 
 Do RL:
 ```bash
-GRID_WALKER_MAX_TURNS=10 GRID_WALKER_N_STEPS=3 python -m src.train.rl
+GRID_WALKER_MAX_TURNS=10 GRID_WALKER_N_STEPS=3 MODEL_NAME=gw ADAPTER_PATH="./adapter_policy/rl" python -m src.train.rl
 ```
