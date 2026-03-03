@@ -9,12 +9,12 @@ python -m src.eval.main --model bytedance-seed/seed-1.6-flash --seeds 0 --verbos
 
 or for eval w/ vllm inference:
 ```bash
-python -m src.eval.main --model Qwen/Qwen3-VL-2B-Instruct --base-url http://localhost:8000/v1 --api-key none --log-images test --seeds 10 --blocks 3 --grid-size 8
+python -m src.eval.main --model Qwen/Qwen3-VL-2B-Instruct --base-url http://localhost:8000/v1 --api-key none --log-images test --seeds 0,1,2,3,4,5,6,7,8,9 --blocks 3 --grid-size 8
 ```
 
 Start vLLM:
 ```bash
-VLLM_SERVER_DEV_MODE=1 vllm serve Qwen/Qwen3-VL-2B-Instruct --dtype bfloat16 --max-model-len 4096 --gpu-memory-utilization 0.95 --enable-sleep-mode --enable-lora
+VLLM_SERVER_DEV_MODE=1 vllm serve Qwen/Qwen3-VL-2B-Instruct --dtype bfloat16 --max-model-len 4096 --gpu-memory-utilization 0.95 --enable-sleep-mode --enable-lora --lora-modules gw=adapter_policy/checkpoint_update_60
 ```
 
 Generate synthetic data:

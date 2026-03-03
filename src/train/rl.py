@@ -24,17 +24,17 @@ from .vllm_utils import (
 )
 
 MODEL_NAME = os.getenv("GRID_WALKER_MODEL", "Qwen/Qwen3-VL-2B-Instruct")
-ADAPTER_PATH = os.path.abspath("./lora_adapter")
+ADAPTER_PATH = os.getenv("ADAPTER_PATH", "./lora_adapter")
 MAX_TURN_NUMBER = int(os.getenv("GRID_WALKER_MAX_TURNS", "10"))
-N_ROLLOUTS = 8
-N_ITERS = 4
+N_ROLLOUTS = int(os.getenv("GRID_WALKER_N_ROLLOUTS", "8"))
+N_ITERS = int(os.getenv("GRID_WALKER_N_ITERS", "4"))
 VAR_EPS = 1e-6
 CLIP_EPS = 0.2
 KL_COEF = 0.04
 LR = 1e-6
 
-GRADIENT_CHECKPOINTING = True
-USE_FLASH_ATTN = False
+GRADIENT_CHECKPOINTING = os.getenv("GRID_WALKER_GRADIENT_CHECKPOINTING", "1") == "1"
+USE_FLASH_ATTN = os.getenv("GRID_WALKER_USE_FLASH_ATTN", "0") == "1"
 
 device = "cuda"
 LOCAL_FILES_ONLY = os.getenv("GRID_WALKER_LOCAL_FILES_ONLY", "1") == "1"
@@ -346,7 +346,12 @@ def initialize_policy_adapter_if_missing() -> None:
     If missing, create a default-initialized adapter (no-op at start), save it, then load in vLLM.
     """
     existing_base = _adapter_base_model(ADAPTER_PATH)
-    adapter_incompatible = existing_base is not None and existing_base != MODEL_NAME
+    current_model_aliases = {
+        str(MODEL_NAME),
+        str(MODEL_SOURCE),
+        os.path.abspath(str(MODEL_SOURCE)),
+    }
+    adapter_incompatible = existing_base is not None and existing_base not in current_model_aliases
 
     if adapter_incompatible:
         print(

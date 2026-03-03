@@ -167,10 +167,6 @@ class RolloutVLMClient:
                 for k in ("content", "token_logprobs", "top_logprobs"):
                     if getattr(raw_logprobs, k, None) is not None:
                         keys.append(k)
-            print(
-                f"[logprobs_debug] present={raw_logprobs is not None}, "
-                f"keys={keys}, extracted_n={len(token_logprobs)}"
-            )
             self._printed_logprobs_debug = True
         self.messages.append({"role": "assistant", "content": assistant_text})
         self.training_messages.append({"role": "assistant", "content": assistant_text})
