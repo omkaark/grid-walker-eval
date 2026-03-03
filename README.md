@@ -1,5 +1,13 @@
 # grid-walker-eval
 
+New setup:
+```bash
+uv sync && source .venv/bin/activate
+uv pip install -U pip setuptools wheel ninja && MAX_JOBS=4 uv pip install flash-attn --no-build-isolation
+uv pip install vllm --torch-backend cu128
+playwright install --with-deps chromium
+```
+
 Save your OPENROUTER_API_KEY in .env
 
 To eval a model from openrouter:
@@ -29,5 +37,5 @@ python -m src.train.finetune --dataset-dir dataset/simpleds --output-dir adapter
 
 Do RL:
 ```bash
-GRID_WALKER_MAX_TURNS=10 GRID_WALKER_N_STEPS=3 MODEL_NAME=gw ADAPTER_PATH="./adapter_policy/rl" python -m src.train.rl
+GRID_WALKER_USE_FLASH_ATTN=1 GRID_WALKER_MAX_TURNS=10 GRID_WALKER_N_STEPS=3 MODEL_NAME=policy ADAPTER_PATH="./adapter_policy/rl" python -m src.train.rl
 ```

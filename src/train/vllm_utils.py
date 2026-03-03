@@ -71,7 +71,15 @@ def _vllm_load_lora(adapter_name: str, adapter_path: str) -> bool:
             json={"lora_name": adapter_name, "lora_path": adapter_path},
             timeout=60,
         )
-        return resp.status_code == 200
+        if resp.status_code == 200:
+            return True
+        # Some vLLM deployments expose static LoRA aliases in /v1/models but
+        # do not enable runtime load/unload endpoints.
+        if resp.status_code == 404 and adapter_name in _vllm_list_models():
+            return True
+        if resp.status_code == 400 and "already exists" in resp.text.lower():
+            return True
+        return False
     except requests.exceptions.RequestException:
         return False
 
