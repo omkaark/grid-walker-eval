@@ -1,8 +1,8 @@
 ---
-base_model: /workspace/.hf_home/hub/models--Qwen--Qwen3-VL-2B-Instruct/snapshots/89644892e4d85e24eaac8bacfd4f463576704203
+base_model: Qwen/Qwen3-VL-2B-Instruct
 library_name: peft
 tags:
-- base_model:adapter:/workspace/.hf_home/hub/models--Qwen--Qwen3-VL-2B-Instruct/snapshots/89644892e4d85e24eaac8bacfd4f463576704203
+- base_model:adapter:Qwen/Qwen3-VL-2B-Instruct
 - lora
 - transformers
 ---

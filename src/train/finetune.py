@@ -16,7 +16,7 @@ from src.common.prompts import SYSTEM_PROMPT
 
 
 MODEL_NAME ="Qwen/Qwen3-VL-2B-Instruct"
-LOCAL_FILES_ONLY = os.getenv("GRID_WALKER_LOCAL_FILES_ONLY", "1") == "1"
+LOCAL_FILES_ONLY = os.getenv("LOCAL_FILES_ONLY", "1") == "1"
 DEFAULT_DATASET_DIR = Path("dataset/simpleds")
 DEFAULT_OUTPUT_DIR = Path("adapter_policy")
 
