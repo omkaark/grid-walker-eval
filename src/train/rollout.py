@@ -17,7 +17,21 @@ MODEL_NAME = os.getenv("MODEL", "Qwen/Qwen3-VL-2B-Instruct")
 VLLM_BASE_URL = "http://localhost:8000/v1"
 GRID_SIZE = 8
 N_BLOCKS = 2
-MAX_PARALLEL_ROLLOUTS = 2
+MAX_PARALLEL_ROLLOUTS = int(os.getenv("MAX_PARALLEL_ROLLOUTS", 2))
+
+async def _preflight_check_chromium() -> None:
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            await browser.close()
+    except Exception as exc:
+        msg = str(exc)
+        if ("Executable doesn't exist" in msg) or ("browserType.launch" in msg):
+            raise RuntimeError(
+                "Playwright Chromium is not installed. "
+                "Run: python -m playwright install chromium"
+            ) from exc
+        raise RuntimeError(f"Playwright Chromium preflight failed: {msg}") from exc
 
 
 @dataclass
@@ -212,6 +226,7 @@ async def run_rollouts(
     n_groups = math.ceil(n_rollouts / group_size)
     group_seeds = [random.randint(0, 2_000_000_000) for _ in range(n_groups)]
 
+    await _preflight_check_chromium()
     sem = asyncio.Semaphore(min(MAX_PARALLEL_ROLLOUTS, n_rollouts))
     tasks = [
         _run_single_rollout(

@@ -2,6 +2,7 @@ import asyncio
 import gc
 import os
 import statistics
+import time
 from typing import Any
 
 import torch
@@ -15,7 +16,7 @@ from .rollout import run_rollouts
 from .vllm_utils import (
     ADAPTER_NAME,
     adapter_exists,
-    vllm_reload_weights,
+    vllm_wake_up,
     vllm_reload_with_lora,
     vllm_sleep,
 )
@@ -253,6 +254,7 @@ def train_step(step_idx: int):
     free_memory()
 
     # === 3. PREPARE DATA (CPU) ===
+    print(f"[step {step_idx}] Preparing data...")
     batch = prepare_batch(rollouts)
     advantages, nonzero_signal_groups, n_groups = _group_normalized_advantages(rewards, rollouts)
 
@@ -272,7 +274,7 @@ def train_step(step_idx: int):
     # === 5. COMPUTE REF LOGPS ===
     print(f"[step {step_idx}] Computing reference log probs...")
     model_inputs = {
-        k: v.to("cuda") if torch.is_tensor(v) else v
+        k: v.to("cuda", non_blocking=True) if torch.is_tensor(v) else v
         for k, v in batch["model_inputs"].items()
     }
     with torch.no_grad():
@@ -310,9 +312,9 @@ def train_step(step_idx: int):
     )
 
     # === 7. TRAINING ITERS ===
-    completion_mask = batch["completion_mask"].to("cuda")
-    ref_logps = ref_logps.to("cuda")
-    adv = advantages.to("cuda").unsqueeze(1)
+    completion_mask = batch["completion_mask"].to("cuda", non_blocking=True)
+    ref_logps = ref_logps.to("cuda", non_blocking=True)
+    adv = advantages.to("cuda", non_blocking=True).unsqueeze(1)
     mask_tokens = int(completion_mask.sum().item())
     adv_abs_mean = float(advantages.abs().mean().item()) if len(advantages) > 0 else 0.0
     print(f"[step {step_idx}] Training tokens in completion mask: {mask_tokens}")
@@ -325,8 +327,9 @@ def train_step(step_idx: int):
             "No completion tokens selected for training. "
             "No assistant token spans were detected; skipping optimization."
         )
-        del policy_model, optimizer
+        del policy_model, base_policy_model, optimizer
         del model_inputs, completion_mask, ref_logps, adv
+        del batch, advantages, rollouts, rewards
         free_memory()
         print(f"Waking vLLM and loading LoRA adapter from {ADAPTER_PATH}...")
         loaded = vllm_reload_with_lora(adapter_path=ADAPTER_PATH, adapter_name=ADAPTER_NAME)
@@ -337,8 +340,9 @@ def train_step(step_idx: int):
             "All group-normalized advantages are ~0 (likely zero reward variance per group). "
             "Skipping optimization to avoid KL-only drift."
         )
-        del policy_model, optimizer
+        del policy_model, base_policy_model, optimizer
         del model_inputs, completion_mask, ref_logps, adv
+        del batch, advantages, rollouts, rewards
         free_memory()
         print(f"Waking vLLM and loading LoRA adapter from {ADAPTER_PATH}...")
         loaded = vllm_reload_with_lora(adapter_path=ADAPTER_PATH, adapter_name=ADAPTER_NAME)
@@ -394,8 +398,9 @@ def train_step(step_idx: int):
 
     # === 8. SAVE & CLEANUP ===
     policy_model.save_pretrained(ADAPTER_PATH)
-    del policy_model, optimizer
+    del policy_model, base_policy_model, optimizer
     del model_inputs, completion_mask, old_logps, ref_logps, adv
+    del batch, advantages, rollouts, rewards
     free_memory()
 
     # === 9. WAKE VLLM WITH UPDATED LORA ===
@@ -435,7 +440,7 @@ def main():
     )
 
     print("Initializing vLLM with base model...")
-    vllm_reload_weights()
+    vllm_wake_up()
     initialize_policy_adapter_if_missing()
 
     for step in range(n_steps):
