@@ -22,7 +22,8 @@ python -m src.eval.main --model Qwen/Qwen3-VL-2B-Instruct --base-url http://loca
 
 Start vLLM:
 ```bash
-VLLM_ALLOW_RUNTIME_LORA_UPDATING=True VLLM_SERVER_DEV_MODE=1 vllm serve Qwen/Qwen3-VL-2B-Instruct --dtype bfloat16 --max-model-len 4096 --gpu-memory-utilization 0.95 --max-num-seq 16 --enable-sleep-mode --enable-lora --lora-modules policy=adapter_policy/rl
+VLLM_ALLOW_RUNTIME_LORA_UPDATING=True VLLM_SERVER_DEV_MODE=1 vllm serve Qwen/Qwen3-VL-2B-Instruct --dtype bfloat16 --max-model-len 4096 --gpu-memory-utilization 0.95 --max-num-seq 16 --enable-sleep-mode --enable-lora --lora-modules policy=grid-w
+alker-eval/adapter_policy/rl
 ```
 
 Generate synthetic data:
@@ -37,5 +38,5 @@ python -m src.train.finetune --dataset-dir dataset/simpleds --output-dir adapter
 
 Do RL:
 ```bash
-USE_FLASH_ATTN=1 MAX_TURNS=10 N_STEPS=1000 N_ROLLOUTS=16 MODEL=Qwen/Qwen3-VL-2B-Instruct ADAPTER_PATH=/workspace/grid-walker-eval/adapter_policy/rl python -m src.train.rl
+USE_FLASH_ATTN=1 MAX_TURNS=10 N_STEPS=1000 N_ROLLOUTS=16 GRPO_GROUP_SIZE=8 MODEL=Qwen/Qwen3-VL-2B-Instruct ADAPTER_PATH=/workspace/grid-walker-eval/adapter_policy/rl python -m src.train.rl
 ```

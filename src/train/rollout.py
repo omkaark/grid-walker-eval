@@ -55,7 +55,6 @@ class RolloutVLMClient(VLMClient):
         self.model = ADAPTER_NAME if use_lora else MODEL_NAME
         super().__init__(model=self.model, base_url=VLLM_BASE_URL, api_key="EMPTY")
         self.training_messages: list[dict[str, Any]] = []
-        self._printed_logprobs_debug = False
 
     def reset(self) -> None:
         super().reset()
