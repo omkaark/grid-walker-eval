@@ -26,6 +26,7 @@ ADAPTER_PATH = os.path.abspath(os.getenv("ADAPTER_PATH", "./lora_adapter"))
 MAX_TURN_NUMBER = int(os.getenv("MAX_TURNS", "10"))
 N_ROLLOUTS = int(os.getenv("N_ROLLOUTS", "8"))
 N_ITERS = int(os.getenv("N_ITERS", "4"))
+ZERO_WIN_RETRIES = int(os.getenv("ZERO_WIN_RETRIES", "2"))
 CLIP_EPS = 0.2
 KL_COEF = 0.04
 LR = 5e-7
@@ -57,6 +58,10 @@ def _is_text_lora_param(name: str) -> bool:
     return any(module_name in name for module_name in TEXT_LORA_TARGET_MODULES)
 
 processor = AutoProcessor.from_pretrained(MODEL_NAME)
+tokenizer = processor.tokenizer
+ASSISTANT_START_IDS = tokenizer.encode("<|im_start|>assistant\n", add_special_tokens=False)
+ASSISTANT_END_IDS = tokenizer.encode("<|im_end|>", add_special_tokens=False)
+ASSISTANT_END_WITH_NEWLINE_IDS = tokenizer.encode("<|im_end|>\n", add_special_tokens=False)
 
 def get_per_token_logps(model, model_inputs: dict[str, Any]) -> torch.Tensor:
     """Compute per-token log probabilities from a multimodal forward pass."""
@@ -76,19 +81,53 @@ def free_memory() -> None:
     torch.cuda.empty_cache()
 
 
-def _to_int_token_ids(tokenized: Any) -> list[int]:
-    """Convert chat-template tokenized output to a flat token id list."""
-    values = tokenized.tolist() if isinstance(tokenized, torch.Tensor) else list(tokenized)
-    if isinstance(values, list) and values and isinstance(values[0], (list, tuple)):
-        values = list(values[0])
-    return [int(v) for v in values]
+def _find_subsequence(token_ids: list[int], pattern: list[int], start: int) -> int:
+    """Return first index >= start where pattern appears, else -1."""
+    if not pattern:
+        return -1
+    last = len(token_ids) - len(pattern) + 1
+    for i in range(start, max(start, last)):
+        if token_ids[i : i + len(pattern)] == pattern:
+            return i
+    return -1
+
+
+def _build_assistant_completion_mask(token_ids: list[int]) -> torch.Tensor:
+    """
+    Mark assistant content spans via chat-template delimiters:
+    <|im_start|>assistant\\n ... <|im_end|>\\n.
+    """
+    seq_len = len(token_ids)
+    mask = torch.zeros(seq_len, dtype=torch.float32)
+    if seq_len == 0:
+        return mask
+    if not ASSISTANT_START_IDS or not ASSISTANT_END_IDS:
+        return mask
+
+    pos = 0
+    while pos < seq_len:
+        start_idx = _find_subsequence(token_ids, ASSISTANT_START_IDS, pos)
+        if start_idx < 0:
+            break
+        content_start = start_idx + len(ASSISTANT_START_IDS)
+        end_ids = ASSISTANT_END_WITH_NEWLINE_IDS or ASSISTANT_END_IDS
+        end_idx = _find_subsequence(token_ids, end_ids, content_start)
+        if end_idx < 0:
+            end_ids = ASSISTANT_END_IDS
+            end_idx = _find_subsequence(token_ids, end_ids, content_start)
+        if end_idx < 0:
+            break
+        if content_start < end_idx:
+            mask[content_start:end_idx] = 1.0
+        pos = end_idx + len(end_ids)
+
+    return mask
 
 
 def prepare_batch(rollouts):
     """Build a multimodal batch and aligned completion masks for PPO-style loss."""
     texts: list[str] = []
     all_images = []
-    all_completion_masks = []
 
     for rollout in rollouts:
         messages = rollout.request["messages"]
@@ -102,52 +141,6 @@ def prepare_batch(rollouts):
 
         texts.append(text)
         all_images.append(image_inputs)
-
-        token_ids = _to_int_token_ids(
-            processor.apply_chat_template(
-                messages,
-                tokenize=True,
-                add_generation_prompt=False,
-            )
-        )
-        seq_len = len(token_ids)
-
-        completion_mask = [0.0] * seq_len
-
-        turn_idx = 0
-        for i, msg in enumerate(messages):
-            if msg.get("role") != "assistant":
-                continue
-
-            tokens_with = _to_int_token_ids(
-                processor.apply_chat_template(
-                    messages[: i + 1],
-                    tokenize=True,
-                    add_generation_prompt=False,
-                )
-            )
-            tokens_without = _to_int_token_ids(
-                processor.apply_chat_template(
-                    messages[:i],
-                    tokenize=True,
-                    add_generation_prompt=False,
-                )
-            )
-
-            start_pos = min(len(tokens_without), seq_len)
-            end_pos = min(len(tokens_with), seq_len)
-
-            span_len = end_pos - start_pos
-
-            # Always train over assistant tokens in the span.
-            for j in range(span_len):
-                pos = start_pos + j
-                if pos < seq_len:
-                    completion_mask[pos] = 1.0
-
-            turn_idx += 1
-
-        all_completion_masks.append(torch.tensor(completion_mask, dtype=torch.float32))
 
     processor_kwargs: dict[str, Any] = {
         "text": texts,
@@ -163,8 +156,10 @@ def prepare_batch(rollouts):
     completion_mask = torch.zeros(n, max_len, dtype=torch.float32)
 
     for i in range(n):
-        seq_len = min(len(all_completion_masks[i]), max_len)
-        completion_mask[i, :seq_len] = all_completion_masks[i][:seq_len]
+        seq_len = int(model_inputs["attention_mask"][i].sum().item())
+        token_ids = model_inputs["input_ids"][i, :seq_len].tolist()
+        mask = _build_assistant_completion_mask(token_ids)
+        completion_mask[i, :seq_len] = mask[:seq_len]
 
     return {
         "model_inputs": model_inputs,
@@ -235,18 +230,51 @@ def initialize_policy_adapter_if_missing() -> None:
 def train_step(step_idx: int):
     # === 1. ROLLOUTS (vLLM awake) ===
     use_lora = True
-    print(
-        f"[step {step_idx}] Running rollouts with "
-        f"{'LoRA adapter' if use_lora else 'base model'}..."
-    )
+    rollouts = []
+    rewards = []
+    reward_mean = 0.0
+    reward_std = 0.0
+    win_ratio = 0.0
+    wins = 0
+    advantages = torch.tensor([], dtype=torch.float32)
+    nonzero_signal_groups = 0
+    n_groups = 0
+    adv_abs_mean = 0.0
 
-    rollouts, rewards = asyncio.run(
-        run_rollouts(N_ROLLOUTS, max_turn_number=MAX_TURN_NUMBER, use_lora=use_lora)
-    )
-    reward_mean = statistics.mean(rewards)
-    reward_std = statistics.stdev(rewards) if len(rewards) > 1 else 0.0
-    win_ratio = sum(1 for r in rollouts if r.won) / len(rollouts)
+    for attempt in range(ZERO_WIN_RETRIES + 1):
+        print(
+            f"[step {step_idx}] Running rollouts attempt {attempt + 1}/{ZERO_WIN_RETRIES + 1} with "
+            f"{'LoRA adapter' if use_lora else 'base model'}..."
+        )
+        rollouts, rewards = asyncio.run(
+            run_rollouts(N_ROLLOUTS, max_turn_number=MAX_TURN_NUMBER, use_lora=use_lora)
+        )
+        reward_mean = statistics.mean(rewards)
+        reward_std = statistics.stdev(rewards) if len(rewards) > 1 else 0.0
+        wins = sum(1 for r in rollouts if r.won)
+        win_ratio = wins / len(rollouts)
+        advantages, nonzero_signal_groups, n_groups = _group_normalized_advantages(rewards, rollouts)
+        adv_abs_mean = float(advantages.abs().mean().item()) if len(advantages) > 0 else 0.0
+
+        if wins > 0:
+            break
+        if attempt < ZERO_WIN_RETRIES:
+            print(f"[step {step_idx}] 0/{len(rollouts)} wins. Retrying rollouts...")
+            continue
+
+        print(
+            f"[step {step_idx}] 0/{len(rollouts)} wins after {ZERO_WIN_RETRIES + 1} attempts. "
+            "Skipping training for this step."
+        )
+        return reward_mean
+
     print(f"[step {step_idx}] Rewards: mean={reward_mean:.3f}, std={reward_std:.3f}")
+    if adv_abs_mean < 1e-6:
+        print(
+            "All group-normalized advantages are ~0 (likely zero reward variance per group). "
+            "Skipping optimization to avoid KL-only drift."
+        )
+        return reward_mean
 
     # === 2. SLEEP vLLM ===
     print(f"[step {step_idx}] Putting vLLM to sleep...")
@@ -256,7 +284,6 @@ def train_step(step_idx: int):
     # === 3. PREPARE DATA (CPU) ===
     print(f"[step {step_idx}] Preparing data...")
     batch = prepare_batch(rollouts)
-    advantages, nonzero_signal_groups, n_groups = _group_normalized_advantages(rewards, rollouts)
 
     # === 4. LOAD BASE MODEL FOR REF LOGPS ===
     ref_model_kwargs = {
@@ -316,38 +343,11 @@ def train_step(step_idx: int):
     ref_logps = ref_logps.to("cuda", non_blocking=True)
     adv = advantages.to("cuda", non_blocking=True).unsqueeze(1)
     mask_tokens = int(completion_mask.sum().item())
-    adv_abs_mean = float(advantages.abs().mean().item()) if len(advantages) > 0 else 0.0
     print(f"[step {step_idx}] Training tokens in completion mask: {mask_tokens}")
     print(
         f"[step {step_idx}] Dr.GRPO groups with non-zero centered reward signal: "
         f"{nonzero_signal_groups}/{n_groups}"
     )
-    if mask_tokens == 0:
-        print(
-            "No completion tokens selected for training. "
-            "No assistant token spans were detected; skipping optimization."
-        )
-        del policy_model, base_policy_model, optimizer
-        del model_inputs, completion_mask, ref_logps, adv
-        del batch, advantages, rollouts, rewards
-        free_memory()
-        print(f"Waking vLLM and loading LoRA adapter from {ADAPTER_PATH}...")
-        loaded = vllm_reload_with_lora(adapter_path=ADAPTER_PATH, adapter_name=ADAPTER_NAME)
-        print(f"[step {step_idx}] Adapter reload status after zero-mask skip: {loaded}")
-        return reward_mean
-    if adv_abs_mean < 1e-6:
-        print(
-            "All group-normalized advantages are ~0 (likely zero reward variance per group). "
-            "Skipping optimization to avoid KL-only drift."
-        )
-        del policy_model, base_policy_model, optimizer
-        del model_inputs, completion_mask, ref_logps, adv
-        del batch, advantages, rollouts, rewards
-        free_memory()
-        print(f"Waking vLLM and loading LoRA adapter from {ADAPTER_PATH}...")
-        loaded = vllm_reload_with_lora(adapter_path=ADAPTER_PATH, adapter_name=ADAPTER_NAME)
-        print(f"[step {step_idx}] Adapter reload status after zero-adv skip: {loaded}")
-        return reward_mean
 
     # Old policy logprobs are from the frozen snapshot before optimizer updates.
     policy_model.eval()
