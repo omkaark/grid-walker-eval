@@ -26,11 +26,6 @@ async def _preflight_check_chromium() -> None:
             await browser.close()
     except Exception as exc:
         msg = str(exc)
-        if ("Executable doesn't exist" in msg) or ("browserType.launch" in msg):
-            raise RuntimeError(
-                "Playwright Chromium is not installed. "
-                "Run: python -m playwright install chromium"
-            ) from exc
         raise RuntimeError(f"Playwright Chromium preflight failed: {msg}") from exc
 
 
@@ -264,9 +259,11 @@ async def run_rollouts(
         ][:3]
         if invalid_examples:
             print(f"Invalid examples: {invalid_examples}")
+        raise RuntimeError("Invalid Example received. Fail-fast for now.")
     if total_failed > 0:
         failed_examples = [h for r in rollouts for h in r.history if h.startswith("[failed:")][:3]
         if failed_examples:
             print(f"Failed examples: {failed_examples}")
+        raise RuntimeError("Failed Example received. Fail-fast for now.")
 
     return rollouts, rewards
