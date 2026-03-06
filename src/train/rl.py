@@ -26,7 +26,8 @@ ADAPTER_PATH = os.path.abspath(os.getenv("ADAPTER_PATH", "./lora_adapter"))
 MAX_TURN_NUMBER = int(os.getenv("MAX_TURNS", "10"))
 N_ROLLOUTS = int(os.getenv("N_ROLLOUTS", "8"))
 N_ITERS = int(os.getenv("N_ITERS", "4"))
-ZERO_WIN_RETRIES = int(os.getenv("ZERO_WIN_RETRIES", "2"))
+ZERO_WIN_RETRIES = int(os.getenv("ZERO_WIN_RETRIES", "5"))
+MAX_ROLLOUT_ERROR_RETRIES = int(os.getenv("MAX_ROLLOUT_ERROR_RETRIES", "5"))
 CLIP_EPS = 0.2
 KL_COEF = 0.04
 LR = 5e-7
@@ -240,15 +241,25 @@ def train_step(step_idx: int):
     nonzero_signal_groups = 0
     n_groups = 0
     adv_abs_mean = 0.0
+    rollout_error_retries = 0 # count
 
     for attempt in range(ZERO_WIN_RETRIES + 1):
         print(
             f"[step {step_idx}] Running rollouts attempt {attempt + 1}/{ZERO_WIN_RETRIES + 1} with "
             f"{'LoRA adapter' if use_lora else 'base model'}..."
         )
-        rollouts, rewards = asyncio.run(
-            run_rollouts(N_ROLLOUTS, max_turn_number=MAX_TURN_NUMBER, use_lora=use_lora)
-        )
+        try:
+            rollouts, rewards = asyncio.run(
+                run_rollouts(N_ROLLOUTS, max_turn_number=MAX_TURN_NUMBER, use_lora=use_lora)
+            )
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            print(f"[step {step_idx}] rollout attempt {rollout_error_retries}/{MAX_ROLLOUT_ERROR_RETRIES} failed: {e}")
+            rollout_error_retries += 1
+            if rollout_error_retries >= MAX_ROLLOUT_ERROR_RETRIES:
+                raise
+            continue
         reward_mean = statistics.mean(rewards)
         reward_std = statistics.stdev(rewards) if len(rewards) > 1 else 0.0
         wins = sum(1 for r in rollouts if r.won)
@@ -301,7 +312,7 @@ def train_step(step_idx: int):
     # === 5. COMPUTE REF LOGPS ===
     print(f"[step {step_idx}] Computing reference log probs...")
     model_inputs = {
-        k: v.to("cuda", non_blocking=True) if torch.is_tensor(v) else v
+        k: v.to("cuda") if torch.is_tensor(v) else v
         for k, v in batch["model_inputs"].items()
     }
     with torch.no_grad():
@@ -339,9 +350,9 @@ def train_step(step_idx: int):
     )
 
     # === 7. TRAINING ITERS ===
-    completion_mask = batch["completion_mask"].to("cuda", non_blocking=True)
-    ref_logps = ref_logps.to("cuda", non_blocking=True)
-    adv = advantages.to("cuda", non_blocking=True).unsqueeze(1)
+    completion_mask = batch["completion_mask"].to("cuda")
+    ref_logps = ref_logps.to("cuda")
+    adv = advantages.to("cuda").unsqueeze(1)
     mask_tokens = int(completion_mask.sum().item())
     print(f"[step {step_idx}] Training tokens in completion mask: {mask_tokens}")
     print(
@@ -385,7 +396,7 @@ def train_step(step_idx: int):
             {
                 "train/loss": loss.item(),
                 "train/kl": kl_mean.item(),
-                "train/iter": step_idx * N_ITERS + it,
+                "train/step": step_idx,
             },
             step=step_idx * N_ITERS + it,
         )
