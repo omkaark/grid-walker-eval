@@ -16,6 +16,7 @@ dependencies = [
     "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.8cxx11abiTRUE-cp312-cp312-linux_x86_64.whl",
     "wandb>=0.25.0",
     "transformers>=5.2.0",
+    "matplotlib>=3.10.8",
 ]
 
 [[tool.uv.index]]
