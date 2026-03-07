@@ -28,7 +28,12 @@ alker-eval/adapter_policy/rl
 
 Generate synthetic data:
 ```bash
-python -m src.data.generate --n-blocks 3 --grid-size 8 --samples 1000 --workers 10
+python -m src.data.generate_simple --n-blocks 3 --grid-size 8 --samples 1000 --workers 10
+```
+
+Generate synthetic data with reasoning traces:
+```bash
+python -m src.data.generate_with_reasoning --n-blocks 3 --grid-size 8 --samples 1000 --workers 10
 ```
 
 Do finetune for midtrain:
