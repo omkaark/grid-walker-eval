@@ -28,6 +28,7 @@ N_ROLLOUTS = int(os.getenv("N_ROLLOUTS", "8"))
 N_ITERS = int(os.getenv("N_ITERS", "4"))
 ZERO_WIN_RETRIES = int(os.getenv("ZERO_WIN_RETRIES", "10"))
 MAX_ROLLOUT_ERROR_RETRIES = int(os.getenv("MAX_ROLLOUT_ERROR_RETRIES", "10"))
+ROLLOUT_WAIT_FOR_S = float(os.getenv("ROLLOUT_WAIT_FOR_S", "600"))
 CLIP_EPS = 0.2
 KL_COEF = 0.04
 LR = 5e-7
@@ -250,7 +251,10 @@ def train_step(step_idx: int):
         )
         try:
             rollouts, rewards = asyncio.run(
-                run_rollouts(N_ROLLOUTS, max_turn_number=MAX_TURN_NUMBER, use_lora=use_lora)
+                asyncio.wait_for(
+                    run_rollouts(N_ROLLOUTS, max_turn_number=MAX_TURN_NUMBER, use_lora=use_lora),
+                    timeout=ROLLOUT_WAIT_FOR_S,
+                )
             )
         except KeyboardInterrupt:
             raise
