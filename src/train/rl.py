@@ -1,6 +1,8 @@
 import asyncio
 import gc
+import math
 import os
+import random
 import statistics
 import time
 from typing import Any
@@ -21,11 +23,15 @@ from .vllm_utils import (
     vllm_sleep,
 )
 
+MODEL_NAME = os.environ["MODEL"]
+ADAPTER_PATH = os.path.abspath(os.environ["ADAPTER_PATH"])
+N_GROUPS = int(os.getenv("N_GROUPS", "4"))
+N_ROLLOUTS_PER_GROUP = int(os.getenv("N_ROLLOUTS_PER_GROUP", "32"))
 DR_GRPO_MAX_TOKENS = int(os.getenv("DR_GRPO_MAX_TOKENS", "20"))
-MODEL_NAME = os.getenv("MODEL", "Qwen/Qwen3-VL-2B-Instruct")
-ADAPTER_PATH = os.path.abspath(os.getenv("ADAPTER_PATH", "./lora_adapter"))
 MAX_TURN_NUMBER = int(os.getenv("MAX_TURNS", "10"))
-N_ROLLOUTS = int(os.getenv("N_ROLLOUTS", "8"))
+TOTAL_ROLLOUTS = N_ROLLOUTS_PER_GROUP * N_GROUPS
+ROLLOUT_CHUNK_SIZE = int(os.getenv("ROLLOUT_CHUNK_SIZE", str(N_ROLLOUTS_PER_GROUP)))
+TRAIN_MICROBATCH_SIZE = int(os.getenv("TRAIN_MICROBATCH_SIZE", str(N_ROLLOUTS_PER_GROUP)))
 N_ITERS = int(os.getenv("N_ITERS", "4"))
 ZERO_WIN_RETRIES = int(os.getenv("ZERO_WIN_RETRIES", "10"))
 MAX_ROLLOUT_ERROR_RETRIES = int(os.getenv("MAX_ROLLOUT_ERROR_RETRIES", "10"))
@@ -35,7 +41,8 @@ KL_COEF = 0.04
 LR = 5e-7
 LOG_RATIO_CLAMP = 20.0
 GROUP_ADV_EPS = 1e-4
-SHOULD_REASON = os.getenv("SHOULD_REASON", "0") == "1"
+SHOULD_REASON_ZERO = os.getenv("SHOULD_REASON_ZERO", "0") == "1"
+SHOULD_REASON = (os.getenv("SHOULD_REASON", "0") == "1") and not SHOULD_REASON_ZERO
 
 GRADIENT_CHECKPOINTING = os.getenv("GRADIENT_CHECKPOINTING", "1") == "1"
 USE_FLASH_ATTN = os.getenv("USE_FLASH_ATTN", "0") == "1"
@@ -83,6 +90,88 @@ def get_per_token_logps(model, model_inputs: dict[str, Any]) -> torch.Tensor:
 def free_memory() -> None:
     gc.collect()
     torch.cuda.empty_cache()
+
+
+def _effective_group_size(total_rollouts: int) -> int:
+    if N_ROLLOUTS_PER_GROUP <= 0:
+        raise ValueError(f"N_ROLLOUTS_PER_GROUP must be > 0, got {N_ROLLOUTS_PER_GROUP}")
+    if N_GROUPS <= 0:
+        raise ValueError(f"N_GROUPS must be > 0, got {N_GROUPS}")
+    if total_rollouts != TOTAL_ROLLOUTS:
+        raise ValueError(
+            f"total_rollouts={total_rollouts} does not match N_ROLLOUTS_PER_GROUP * N_GROUPS={TOTAL_ROLLOUTS}"
+        )
+    return N_ROLLOUTS_PER_GROUP
+
+
+def _move_model_inputs_to_device(
+    model_inputs: dict[str, Any],
+    device: str,
+) -> dict[str, Any]:
+    return {
+        key: value.to(device) if torch.is_tensor(value) else value
+        for key, value in model_inputs.items()
+    }
+
+
+def _compute_logps_batched(
+    model,
+    prepared_microbatches: list[tuple[int, int, dict[str, Any]]],
+) -> list[torch.Tensor]:
+    outputs: list[torch.Tensor] = []
+    for _, _, microbatch in prepared_microbatches:
+        micro_inputs = _move_model_inputs_to_device(microbatch["model_inputs"], "cuda")
+        with torch.no_grad():
+            outputs.append(get_per_token_logps(model, micro_inputs).cpu())
+        del micro_inputs
+    return outputs
+
+
+def _collect_effective_rollouts(
+    step_idx: int,
+    attempt_idx: int,
+    use_lora: bool,
+) -> tuple[list[Any], list[float]]:
+    if TOTAL_ROLLOUTS <= 0:
+        return [], []
+    if ROLLOUT_CHUNK_SIZE <= 0:
+        raise ValueError(f"ROLLOUT_CHUNK_SIZE must be > 0, got {ROLLOUT_CHUNK_SIZE}")
+
+    group_size = _effective_group_size(TOTAL_ROLLOUTS)
+    n_groups = N_GROUPS
+    group_seeds = [random.randint(0, 2_000_000_000) for _ in range(n_groups)]
+
+    collected_rollouts: list[Any] = []
+    collected_rewards: list[float] = []
+    collected = 0
+    chunk_idx = 0
+    while collected < TOTAL_ROLLOUTS:
+        chunk_n = min(ROLLOUT_CHUNK_SIZE, TOTAL_ROLLOUTS - collected)
+        print(
+            f"[step {step_idx}] Rollout chunk {chunk_idx + 1}: collecting {chunk_n} samples "
+            f"(collected {collected}/{TOTAL_ROLLOUTS}, groups={N_GROUPS}, "
+            f"rollouts_per_group={group_size}) "
+            f"for attempt {attempt_idx + 1}/{ZERO_WIN_RETRIES + 1}"
+        )
+        chunk_rollouts, chunk_rewards = asyncio.run(
+            asyncio.wait_for(
+                run_rollouts(
+                    chunk_n,
+                    max_turn_number=MAX_TURN_NUMBER,
+                    use_lora=use_lora,
+                    start_rollout_idx=collected,
+                    group_size=group_size,
+                    group_seeds=group_seeds,
+                ),
+                timeout=ROLLOUT_WAIT_FOR_S,
+            )
+        )
+        collected_rollouts.extend(chunk_rollouts)
+        collected_rewards.extend(chunk_rewards)
+        collected += chunk_n
+        chunk_idx += 1
+
+    return collected_rollouts, collected_rewards
 
 
 def _find_subsequence(token_ids: list[int], pattern: list[int], start: int) -> int:
@@ -232,30 +321,42 @@ def initialize_policy_adapter_if_missing() -> None:
 
 def train_step(step_idx: int):
     # === 1. ROLLOUTS (vLLM awake) ===
+    if TOTAL_ROLLOUTS <= 0:
+        raise ValueError(
+            f"N_ROLLOUTS_PER_GROUP * N_GROUPS must be > 0, got {N_ROLLOUTS_PER_GROUP} * {N_GROUPS}"
+        )
+    if TRAIN_MICROBATCH_SIZE <= 0:
+        raise ValueError(f"TRAIN_MICROBATCH_SIZE must be > 0, got {TRAIN_MICROBATCH_SIZE}")
+
     use_lora = True
     rollouts = []
     rewards = []
     reward_mean = 0.0
     reward_std = 0.0
     win_ratio = 0.0
+    invalid_rate = 0.0
     wins = 0
     advantages = torch.tensor([], dtype=torch.float32)
     nonzero_signal_groups = 0
     n_groups = 0
     adv_abs_mean = 0.0
-    rollout_error_retries = 0 # count
+    rollout_error_retries = 0  # count
+    group_size = _effective_group_size(TOTAL_ROLLOUTS)
+    train_microbatch_size = min(TRAIN_MICROBATCH_SIZE, max(1, TOTAL_ROLLOUTS))
 
     for attempt in range(ZERO_WIN_RETRIES + 1):
         print(
             f"[step {step_idx}] Running rollouts attempt {attempt + 1}/{ZERO_WIN_RETRIES + 1} with "
-            f"{'LoRA adapter' if use_lora else 'base model'}..."
+            f"{'LoRA adapter' if use_lora else 'base model'} "
+            f"(n_groups={N_GROUPS}, rollouts_per_group={group_size}, total_rollouts={TOTAL_ROLLOUTS}, "
+            f"rollout_chunk_size={ROLLOUT_CHUNK_SIZE}, "
+            f"train_microbatch_size={train_microbatch_size})..."
         )
         try:
-            rollouts, rewards = asyncio.run(
-                asyncio.wait_for(
-                    run_rollouts(N_ROLLOUTS, max_turn_number=MAX_TURN_NUMBER, use_lora=use_lora),
-                    timeout=ROLLOUT_WAIT_FOR_S,
-                )
+            rollouts, rewards = _collect_effective_rollouts(
+                step_idx=step_idx,
+                attempt_idx=attempt,
+                use_lora=use_lora,
             )
         except KeyboardInterrupt:
             raise
@@ -273,6 +374,7 @@ def train_step(step_idx: int):
         reward_std = statistics.stdev(rewards) if len(rewards) > 1 else 0.0
         wins = sum(1 for r in rollouts if r.won)
         win_ratio = wins / len(rollouts)
+        invalid_rate = sum(1 for r in rollouts if getattr(r, "invalidated", False)) / len(rollouts)
         advantages, nonzero_signal_groups, n_groups = _group_normalized_advantages(rewards, rollouts)
         adv_abs_mean = float(advantages.abs().mean().item()) if len(advantages) > 0 else 0.0
 
@@ -302,8 +404,14 @@ def train_step(step_idx: int):
     free_memory()
 
     # === 3. PREPARE DATA (CPU) ===
-    print(f"[step {step_idx}] Preparing data...")
-    batch = prepare_batch(rollouts)
+    print(f"[step {step_idx}] Preparing data in training microbatches...")
+    prepared_microbatches: list[tuple[int, int, dict[str, Any]]] = []
+    mask_tokens = 0
+    for start in range(0, len(rollouts), train_microbatch_size):
+        end = min(start + train_microbatch_size, len(rollouts))
+        microbatch = prepare_batch(rollouts[start:end])
+        prepared_microbatches.append((start, end, microbatch))
+        mask_tokens += int(microbatch["completion_mask"].sum().item())
 
     # === 4. LOAD BASE MODEL FOR REF LOGPS ===
     ref_model_kwargs = {
@@ -319,13 +427,8 @@ def train_step(step_idx: int):
     base_model.eval()
 
     # === 5. COMPUTE REF LOGPS ===
-    print(f"[step {step_idx}] Computing reference log probs...")
-    model_inputs = {
-        k: v.to("cuda") if torch.is_tensor(v) else v
-        for k, v in batch["model_inputs"].items()
-    }
-    with torch.no_grad():
-        ref_logps = get_per_token_logps(base_model, model_inputs).cpu()
+    print(f"[step {step_idx}] Computing reference log probs in microbatches...")
+    ref_logps_batches = _compute_logps_batched(base_model, prepared_microbatches)
 
     del base_model
     free_memory()
@@ -359,10 +462,6 @@ def train_step(step_idx: int):
     )
 
     # === 7. TRAINING ITERS ===
-    completion_mask = batch["completion_mask"].to("cuda")
-    ref_logps = ref_logps.to("cuda")
-    adv = advantages.to("cuda").unsqueeze(1)
-    mask_tokens = int(completion_mask.sum().item())
     print(f"[step {step_idx}] Training tokens in completion mask: {mask_tokens}")
     print(
         f"[step {step_idx}] Dr.GRPO groups with non-zero centered reward signal: "
@@ -371,56 +470,70 @@ def train_step(step_idx: int):
 
     # Old policy logprobs are from the frozen snapshot before optimizer updates.
     policy_model.eval()
-    with torch.no_grad():
-        old_logps = get_per_token_logps(policy_model, model_inputs).detach()
+    print(f"[step {step_idx}] Computing old policy log probs in microbatches...")
+    old_logps_batches = _compute_logps_batched(policy_model, prepared_microbatches)
     policy_model.train()
 
     for it in range(N_ITERS):
         optimizer.zero_grad(set_to_none=True)
+        loss_total = 0.0
+        kl_numerator = 0.0
+        kl_denominator = 0.0
 
-        current_logps = get_per_token_logps(policy_model, model_inputs)
+        for batch_idx, (start, end, microbatch) in enumerate(prepared_microbatches):
+            model_inputs = _move_model_inputs_to_device(microbatch["model_inputs"], "cuda")
+            current_logps = get_per_token_logps(policy_model, model_inputs)
 
-        cur = current_logps
-        old = old_logps
-        ref = ref_logps
-        mask = completion_mask
+            cur = current_logps
+            old = old_logps_batches[batch_idx].to("cuda")
+            ref = ref_logps_batches[batch_idx].to("cuda")
+            mask = microbatch["completion_mask"].to("cuda")
+            adv = advantages[start:end].to("cuda").unsqueeze(1)
 
-        log_ratio = (cur - old).clamp(-LOG_RATIO_CLAMP, LOG_RATIO_CLAMP)
-        ratio = torch.exp(log_ratio)
-        clipped = torch.clamp(ratio, 1 - CLIP_EPS, 1 + CLIP_EPS)
-        policy_loss = -torch.min(ratio * adv, clipped * adv)
-        log_ref_over_cur = (ref - cur).clamp(-LOG_RATIO_CLAMP, LOG_RATIO_CLAMP)
-        approx_kl = torch.exp(log_ref_over_cur) - log_ref_over_cur - 1.0
-        # Dr. GRPO: no token-length normalization.
-        loss = ((policy_loss + KL_COEF * approx_kl) * mask).sum() / DR_GRPO_MAX_TOKENS
+            log_ratio = (cur - old).clamp(-LOG_RATIO_CLAMP, LOG_RATIO_CLAMP)
+            ratio = torch.exp(log_ratio)
+            clipped = torch.clamp(ratio, 1 - CLIP_EPS, 1 + CLIP_EPS)
+            policy_loss = -torch.min(ratio * adv, clipped * adv)
+            log_ref_over_cur = (ref - cur).clamp(-LOG_RATIO_CLAMP, LOG_RATIO_CLAMP)
+            approx_kl = torch.exp(log_ref_over_cur) - log_ref_over_cur - 1.0
+            # Dr. GRPO: no token-length normalization.
+            loss = ((policy_loss + KL_COEF * approx_kl) * mask).sum() / DR_GRPO_MAX_TOKENS
 
-        loss.backward()
+            loss.backward()
+            with torch.no_grad():
+                kl_numerator += float((approx_kl * mask).sum().item())
+                kl_denominator += float(mask.sum().item())
+                loss_total += float(loss.item())
+
+            del model_inputs, current_logps, cur, old, ref, mask, adv
+            del log_ratio, ratio, clipped, policy_loss, log_ref_over_cur, approx_kl, loss
+
         torch.nn.utils.clip_grad_norm_(policy_model.parameters(), 1.0)
         optimizer.step()
 
-        with torch.no_grad():
-            kl_mean = (approx_kl * mask).sum() / (mask.sum() + 1e-8)
-
         wandb.log(
             {
-                "train/loss": loss.item(),
-                "train/kl": kl_mean.item(),
+                "train/loss": loss_total,
+                "train/kl": kl_numerator / (kl_denominator + 1e-8),
                 "train/step": step_idx,
             },
             step=step_idx * N_ITERS + it,
         )
 
-        print(f"[step {step_idx}] Iter {it}: loss={loss.item():.4f}")
+        print(
+            f"[step {step_idx}] Iter {it}: loss={loss_total:.4f}, "
+            f"kl={kl_numerator / (kl_denominator + 1e-8):.6f}"
+        )
 
-        del current_logps, cur, ratio, clipped, policy_loss, approx_kl, loss
         if it < N_ITERS - 1:
             free_memory()
 
     # === 8. SAVE & CLEANUP ===
     policy_model.save_pretrained(ADAPTER_PATH)
     del policy_model, base_policy_model, optimizer
-    del model_inputs, completion_mask, old_logps, ref_logps, adv
-    del batch, advantages, rollouts, rewards
+    del old_logps_batches, ref_logps_batches
+    del prepared_microbatches
+    del advantages, rollouts, rewards
     free_memory()
 
     # === 9. WAKE VLLM WITH UPDATED LORA ===
@@ -432,7 +545,8 @@ def train_step(step_idx: int):
         {
             "rollout/reward_mean": reward_mean,
             "rollout/reward_std": reward_std,
-            "rollout/win_ratio": win_ratio
+            "rollout/win_ratio": win_ratio,
+            "rollout/invalid_rate": invalid_rate,
         },
         step=step_idx * N_ITERS + (N_ITERS - 1),
     )
@@ -445,11 +559,15 @@ def main():
 
     wandb.init(
         project="grid-walker",
-        name="sft+rl" if SHOULD_REASON else "basic",
+        name="rl_zero" if SHOULD_REASON_ZERO else "sft+rl" if SHOULD_REASON else "basic",
         # mode='disabled',
         config={
             "model": MODEL_NAME,
-            "n_rollouts": N_ROLLOUTS,
+            "n_groups": N_GROUPS,
+            "n_rollouts_per_group": N_ROLLOUTS_PER_GROUP,
+            "n_rollouts": TOTAL_ROLLOUTS,
+            "rollout_chunk_size": ROLLOUT_CHUNK_SIZE,
+            "train_microbatch_size": TRAIN_MICROBATCH_SIZE,
             "n_iters": N_ITERS,
             "clip_eps": CLIP_EPS,
             "kl_coef": KL_COEF,
@@ -459,7 +577,8 @@ def main():
             "checkpoint": ADAPTER_PATH
         },
     )
-
+    
+    initialize_policy_adapter_if_missing()
     print("Initializing vLLM with base model...")
     vllm_wake_up()
     initialize_policy_adapter_if_missing()

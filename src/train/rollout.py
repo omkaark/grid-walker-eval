@@ -9,16 +9,17 @@ from typing import Any
 from playwright.async_api import async_playwright
 
 from ..common.browser import capture_screenshot, execute_command, get_state, setup_game
-from ..common.prompts import SYSTEM_PROMPT, SYSTEM_PROMPT_REASONING
+from ..common.prompts import SYSTEM_PROMPT, SYSTEM_PROMPT_REASONING, SYSTEM_PROMPT_REASONING_ZERO
 from ..common.vlm import VLMClient, parse_response
 from .vllm_utils import ADAPTER_NAME
 
 MODEL_NAME = os.getenv("MODEL", "Qwen/Qwen3-VL-2B-Instruct")
 VLLM_BASE_URL = "http://localhost:8000/v1"
 GRID_SIZE = 8
-N_BLOCKS = 3
-MAX_PARALLEL_ROLLOUTS = int(os.getenv("MAX_PARALLEL_ROLLOUTS", 4))
-SHOULD_REASON = os.getenv("SHOULD_REASON", "0") == "1"
+N_BLOCKS = 0
+MAX_PARALLEL_ROLLOUTS = int(os.getenv("MAX_PARALLEL_ROLLOUTS", "4"))
+SHOULD_REASON_ZERO = os.getenv("SHOULD_REASON_ZERO", "0") == "1"
+SHOULD_REASON = (os.getenv("SHOULD_REASON", "0") == "1") and not SHOULD_REASON_ZERO
 MAX_TURNS = int(os.getenv("MAX_TURNS", "10"))
 
 async def _preflight_check_chromium() -> None:
@@ -44,6 +45,7 @@ class RolloutSample:
     invalid_count: int = 0
     failed_count: int = 0
     think_turn_count: int = 0
+    assistant_turns: list[str] = field(default_factory=list)
     history: list[str] = field(default_factory=list)
 
 
@@ -56,7 +58,7 @@ class RolloutVLMClient(VLMClient):
         self.training_messages: list[dict[str, Any]] = []
 
     def reset(self) -> None:
-        system_prompt = SYSTEM_PROMPT_REASONING if SHOULD_REASON else SYSTEM_PROMPT
+        system_prompt = SYSTEM_PROMPT_REASONING_ZERO if SHOULD_REASON_ZERO else SYSTEM_PROMPT_REASONING if SHOULD_REASON else SYSTEM_PROMPT
         self.messages = [{"role": "system", "content": system_prompt}]
         self.training_messages = [
             {"role": "system", "content": [{"type": "text", "text": system_prompt}]}
@@ -135,10 +137,10 @@ def _count_think_turns(assistant_turns: list[str]) -> int:
     return count
 
 
-def _compute_reward(won: bool, think_turn_count: int) -> float:
+def _compute_reward(won: bool, think_turn_count: int, turns_taken: int) -> float:
     reward = 1.0 if won else 0.0
-    if SHOULD_REASON:
-        reward += 0.1 / MAX_TURNS * think_turn_count
+    if SHOULD_REASON or SHOULD_REASON_ZERO:
+        reward += 0.2 * (think_turn_count / max(1, turns_taken))
     return reward
 
 
@@ -203,7 +205,11 @@ async def _run_single_rollout(
         won = bool(state.get("won"))
         steps = int(state.get("steps", 0))
         think_turn_count = _count_think_turns(assistant_turns)
-        reward = 0.0 if invalidated else _compute_reward(won=won, think_turn_count=think_turn_count)
+        reward = 0.0 if invalidated else _compute_reward(
+            won=won,
+            think_turn_count=think_turn_count,
+            turns_taken=turns_taken,
+        )
 
         sample = RolloutSample(
             request={"messages": vlm.training_messages},
@@ -217,6 +223,7 @@ async def _run_single_rollout(
             invalid_count=invalid_count,
             failed_count=failed_count,
             think_turn_count=think_turn_count,
+            assistant_turns=assistant_turns,
             history=history,
         )
         return rollout_idx, sample, reward
@@ -226,28 +233,42 @@ async def run_rollouts(
     n_rollouts: int,
     max_turn_number: int = 2,
     use_lora: bool = False,
+    start_rollout_idx: int = 0,
+    group_size: int | None = None,
+    group_seeds: list[int] | None = None,
 ) -> tuple[list[RolloutSample], list[float]]:
     if n_rollouts <= 0:
         return [], []
 
-    group_size = int(os.getenv("GRPO_GROUP_SIZE", "4"))
-    if group_size <= 0:
-        group_size = 1
-    group_size = min(group_size, n_rollouts)
+    effective_group_size = group_size
+    if effective_group_size is None:
+        effective_group_size = int(os.getenv("N_ROLLOUTS_PER_GROUP", "4"))
+        if effective_group_size <= 0:
+            effective_group_size = 1
+        effective_group_size = min(effective_group_size, n_rollouts)
+    else:
+        effective_group_size = max(1, int(effective_group_size))
 
-    n_groups = math.ceil(n_rollouts / group_size)
-    group_seeds = [random.randint(0, 2_000_000_000) for _ in range(n_groups)]
+    if group_seeds is None:
+        n_groups = math.ceil((start_rollout_idx + n_rollouts) / effective_group_size)
+        group_seeds = [random.randint(0, 2_000_000_000) for _ in range(n_groups)]
+    else:
+        needed_groups = math.ceil((start_rollout_idx + n_rollouts) / effective_group_size)
+        if len(group_seeds) < needed_groups:
+            raise ValueError(
+                f"group_seeds length {len(group_seeds)} is smaller than required groups {needed_groups}"
+            )
 
     await _preflight_check_chromium()
     sem = asyncio.Semaphore(min(MAX_PARALLEL_ROLLOUTS, n_rollouts))
     tasks = [
         _run_single_rollout(
-            rollout_idx=i,
+            rollout_idx=start_rollout_idx + i,
             max_turn_number=max_turn_number,
             use_lora=use_lora,
             sem=sem,
-            seed=group_seeds[i // group_size],
-            group_id=i // group_size,
+            seed=group_seeds[(start_rollout_idx + i) // effective_group_size],
+            group_id=(start_rollout_idx + i) // effective_group_size,
         )
         for i in range(n_rollouts)
     ]
@@ -272,7 +293,7 @@ async def run_rollouts(
         f"win_rate={wins / len(rollouts):.2f}, reward_mean={reward_mean:.3f}, "
         f"turns={total_turns}, invalid={total_invalid}, failed={total_failed}, "
         f"invalidated={total_invalidated}, "
-        f"exec_rate={exec_rate:.2f}, should_reason={SHOULD_REASON}, "
+        f"exec_rate={exec_rate:.2f}, reasoning_enabled={SHOULD_REASON or SHOULD_REASON_ZERO}, "
         f"think_turns={total_think_turns}"
     )
     if total_invalid > 0:
@@ -281,6 +302,11 @@ async def run_rollouts(
         ][:3]
         if invalid_examples:
             print(f"Invalid examples: {invalid_examples}")
+    debug_rollout = next((r for r in rollouts if r.assistant_turns), None)
+    if debug_rollout is not None:
+        print("Debug rollout responses:")
+        for turn_idx, response in enumerate(debug_rollout.assistant_turns, start=1):
+            print(f"  Turn {turn_idx}: {response}")
     if total_failed > 0:
         failed_examples = [h for r in rollouts for h in r.history if h.startswith("[failed:")][:3]
         if failed_examples:

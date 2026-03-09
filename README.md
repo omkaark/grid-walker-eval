@@ -43,5 +43,5 @@ python -m src.train.finetune --dataset-dir dataset/simpleds --output-dir adapter
 
 Do RL:
 ```bash
-USE_FLASH_ATTN=1 MAX_TURNS=10 N_STEPS=1000 N_ROLLOUTS=16 GRPO_GROUP_SIZE=8 MODEL=Qwen/Qwen3-VL-2B-Instruct ADAPTER_PATH=/workspace/grid-walker-eval/adapter_policy/rl python -m src.train.rl
+USE_FLASH_ATTN=1 MAX_TURNS=10 N_STEPS=1000 N_GROUPS=4 N_ROLLOUTS_PER_GROUP=32 ROLLOUT_CHUNK_SIZE=16 TRAIN_MICROBATCH_SIZE=4 MODEL=Qwen/Qwen3-VL-2B-Instruct ADAPTER_PATH=/workspace/grid-walker-eval/adapter_policy/rl python -m src.train.rl
 ```

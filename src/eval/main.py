@@ -19,7 +19,7 @@ def main():
         default="https://openrouter.ai/api/v1",
         help="OpenAI-compatible base URL",
     )
-    parser.add_argument("--seeds", type=str, default="0", help="Comma-separated values like 0,1,2")
+    parser.add_argument("--seeds", type=str, help="Comma-separated values like 0,1,2")
     parser.add_argument("--grid-size", type=int, default=8, help="Grid size")
     parser.add_argument("--blocks", type=int, default=3, help="Number of obstacle blocks")
     parser.add_argument("--max-turns", type=int, default=50, help="Max turns per episode")
@@ -35,7 +35,10 @@ def main():
         print("Error: set --api-key or OPENROUTER_API_KEY in environment/.env")
         return 1
 
-    seeds = [s.strip() for s in args.seeds.split(",")]
+    if not args.seeds:
+        seeds = list(str(i) for i in range(0, 20))
+    else:
+        seeds = [s.strip() for s in args.seeds.split(",")]
 
     results = asyncio.run(run_eval(
         model=args.model,
