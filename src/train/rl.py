@@ -34,6 +34,7 @@ KL_COEF = 0.04
 LR = 5e-7
 LOG_RATIO_CLAMP = 20.0
 GROUP_ADV_EPS = 1e-4
+SHOULD_REASON = os.getenv("SHOULD_REASON", "0") == "1"
 
 GRADIENT_CHECKPOINTING = os.getenv("GRADIENT_CHECKPOINTING", "1") == "1"
 USE_FLASH_ATTN = os.getenv("USE_FLASH_ATTN", "0") == "1"
@@ -215,8 +216,7 @@ def initialize_policy_adapter_if_missing() -> None:
         lora_config = LoraConfig(
             r=16,
             lora_alpha=32,
-            target_modules=list(TEXT_LORA_TARGET_MODULES),
-            lora_dropout=0.05,
+            target_modules=list(TEXT_LORA_TARGET_MODULES)
         )
         init_model = get_peft_model(base_model, lora_config)
         init_model.save_pretrained(ADAPTER_PATH)
@@ -262,7 +262,11 @@ def train_step(step_idx: int):
             print(f"[step {step_idx}] rollout attempt {rollout_error_retries}/{MAX_ROLLOUT_ERROR_RETRIES} failed: {e}")
             rollout_error_retries += 1
             if rollout_error_retries >= MAX_ROLLOUT_ERROR_RETRIES:
-                raise
+                print(
+                    f"[step {step_idx}] Rollouts failed {MAX_ROLLOUT_ERROR_RETRIES} times. "
+                    "Skipping training for this step."
+                )
+                return 0.0
             continue
         reward_mean = statistics.mean(rewards)
         reward_std = statistics.stdev(rewards) if len(rewards) > 1 else 0.0
@@ -440,7 +444,7 @@ def main():
 
     wandb.init(
         project="grid-walker",
-        name="basic",
+        name="sft+rl" if SHOULD_REASON else "basic",
         # mode='disabled',
         config={
             "model": MODEL_NAME,
@@ -451,6 +455,7 @@ def main():
             "lr": LR,
             "gradient_checkpointing": GRADIENT_CHECKPOINTING,
             "flash_attn": USE_FLASH_ATTN,
+            "checkpoint": ADAPTER_PATH
         },
     )
 

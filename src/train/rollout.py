@@ -9,7 +9,7 @@ from typing import Any
 from playwright.async_api import async_playwright
 
 from ..common.browser import capture_screenshot, execute_command, get_state, setup_game
-from ..common.prompts import SYSTEM_PROMPT
+from ..common.prompts import SYSTEM_PROMPT, SYSTEM_PROMPT_REASONING
 from ..common.vlm import VLMClient, parse_response
 from .vllm_utils import ADAPTER_NAME
 
@@ -18,6 +18,7 @@ VLLM_BASE_URL = "http://localhost:8000/v1"
 GRID_SIZE = 8
 N_BLOCKS = 2
 MAX_PARALLEL_ROLLOUTS = int(os.getenv("MAX_PARALLEL_ROLLOUTS", 2))
+SHOULD_REASON = os.getenv("SHOULD_REASON", "0") == "1"
 
 async def _preflight_check_chromium() -> None:
     try:
@@ -35,11 +36,13 @@ class RolloutSample:
     turns: list[list[float]]
     seed: int | None = None
     group_id: int | None = None
+    invalidated: bool = False
     won: bool = False
     steps: int = 0
     turns_taken: int = 0
     invalid_count: int = 0
     failed_count: int = 0
+    think_turn_count: int = 0
     history: list[str] = field(default_factory=list)
 
 
@@ -52,9 +55,10 @@ class RolloutVLMClient(VLMClient):
         self.training_messages: list[dict[str, Any]] = []
 
     def reset(self) -> None:
-        super().reset()
+        system_prompt = SYSTEM_PROMPT_REASONING if SHOULD_REASON else SYSTEM_PROMPT
+        self.messages = [{"role": "system", "content": system_prompt}]
         self.training_messages = [
-            {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]}
+            {"role": "system", "content": [{"type": "text", "text": system_prompt}]}
         ]
 
     @staticmethod
@@ -106,7 +110,7 @@ class RolloutVLMClient(VLMClient):
             self.client.chat.completions.create,
             model=self.model,
             messages=self.messages,
-            max_tokens=32,
+            max_tokens=64,
             temperature=0.7,
             top_p=0.95,
             logprobs=True,
@@ -122,11 +126,18 @@ class RolloutVLMClient(VLMClient):
         return assistant_text, token_logprobs
 
 
-def _compute_reward(
-    won: bool
-) -> float:
-    reward = 1.0 if won else 0
+def _count_think_turns(assistant_turns: list[str]) -> int:
+    count = 0
+    for turn in assistant_turns:
+        if "<think>" in turn and "</think>" in turn:
+            count += 1
+    return count
 
+
+def _compute_reward(won: bool, think_turn_count: int) -> float:
+    reward = 1.0 if won else 0.0
+    if SHOULD_REASON:
+        reward += 0.01 * think_turn_count
     return reward
 
 
@@ -146,7 +157,9 @@ async def _run_single_rollout(
         turns_logprobs: list[list[float]] = []
         invalid_count = 0
         failed_count = 0
+        invalidated = False
         turns_taken = 0
+        assistant_turns: list[str] = []
         state: dict[str, Any] = {"won": False, "steps": 0}
 
         async with async_playwright() as p:
@@ -160,6 +173,7 @@ async def _run_single_rollout(
                 for turn in range(1, max_turn_number + 1):
                     screenshot = await capture_screenshot(page)
                     response, token_logprobs = await vlm.query(screenshot, turn)
+                    assistant_turns.append(response or "")
 
                     turns_logprobs.append(token_logprobs)
                     turns_taken += 1
@@ -167,8 +181,10 @@ async def _run_single_rollout(
                     command = parse_response(response)
                     if command is None:
                         invalid_count += 1
-                        truncated = response[:80] if response else "None"
+                        invalidated = True
+                        truncated = response if response else "None"
                         history.append(f"[invalid: {truncated}]")
+                        break
                     else:
                         success = await execute_command(page, command)
                         if success:
@@ -185,20 +201,21 @@ async def _run_single_rollout(
 
         won = bool(state.get("won"))
         steps = int(state.get("steps", 0))
-        reward = _compute_reward(
-            won=won
-        )
+        think_turn_count = _count_think_turns(assistant_turns)
+        reward = 0.0 if invalidated else _compute_reward(won=won, think_turn_count=think_turn_count)
 
         sample = RolloutSample(
             request={"messages": vlm.training_messages},
             turns=turns_logprobs,
             seed=seed,
             group_id=group_id,
+            invalidated=invalidated,
             won=won,
             steps=steps,
             turns_taken=turns_taken,
             invalid_count=invalid_count,
             failed_count=failed_count,
+            think_turn_count=think_turn_count,
             history=history,
         )
         return rollout_idx, sample, reward
@@ -245,13 +262,17 @@ async def run_rollouts(
     total_turns = sum(r.turns_taken for r in rollouts)
     total_invalid = sum(r.invalid_count for r in rollouts)
     total_failed = sum(r.failed_count for r in rollouts)
+    total_invalidated = sum(1 for r in rollouts if r.invalidated)
+    total_think_turns = sum(r.think_turn_count for r in rollouts)
     valid_exec = max(0, total_turns - total_invalid - total_failed)
     exec_rate = (valid_exec / total_turns) if total_turns > 0 else 0.0
     print(
         f"Rollout summary: n={len(rollouts)}, wins={wins}, "
         f"win_rate={wins / len(rollouts):.2f}, reward_mean={reward_mean:.3f}, "
         f"turns={total_turns}, invalid={total_invalid}, failed={total_failed}, "
-        f"exec_rate={exec_rate:.2f}"
+        f"invalidated={total_invalidated}, "
+        f"exec_rate={exec_rate:.2f}, should_reason={SHOULD_REASON}, "
+        f"think_turns={total_think_turns}"
     )
     if total_invalid > 0:
         invalid_examples = [
@@ -259,7 +280,6 @@ async def run_rollouts(
         ][:3]
         if invalid_examples:
             print(f"Invalid examples: {invalid_examples}")
-        raise RuntimeError("Invalid Example received. Fail-fast for now.")
     if total_failed > 0:
         failed_examples = [h for r in rollouts for h in r.history if h.startswith("[failed:")][:3]
         if failed_examples:

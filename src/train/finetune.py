@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, PeftModel, get_peft_model
 from qwen_vl_utils import process_vision_info
 from transformers import AutoModelForImageTextToText, AutoProcessor
 
@@ -37,6 +37,7 @@ class EpisodeTurn:
     episode_id: int
     frame_path: Path
     command: str
+    target_text: str
 
 
 @dataclass
@@ -75,7 +76,7 @@ def _is_text_lora_param(name: str) -> bool:
     return any(module_name in name for module_name in TEXT_LORA_TARGET_MODULES)
 
 
-def _load_dataset(dataset_dir: Path) -> list[EpisodeSample]:
+def _load_dataset(dataset_dir: Path, add_reason: bool) -> list[EpisodeSample]:
     samples_file = dataset_dir / "samples.json"
     if not samples_file.exists():
         raise FileNotFoundError(f"Missing dataset file: {samples_file}")
@@ -103,6 +104,17 @@ def _load_dataset(dataset_dir: Path) -> list[EpisodeSample]:
         if not command.strip():
             continue
 
+        reason_text = row.get("reason_text", "")
+        if add_reason:
+            if not isinstance(reason_text, str) or not reason_text.strip():
+                raise ValueError(
+                    "Missing/empty reason_text while --add-reason is enabled "
+                    f"(sample_id={sample_id}, episode_id={episode_id})"
+                )
+            target_text = reason_text.strip()
+        else:
+            target_text = f"`{command.strip()}`"
+
         frame_path = dataset_dir / frame_rel
         if not frame_path.exists():
             raise FileNotFoundError(f"Missing frame referenced in dataset: {frame_path}")
@@ -113,6 +125,7 @@ def _load_dataset(dataset_dir: Path) -> list[EpisodeSample]:
                 episode_id=episode_id,
                 frame_path=frame_path,
                 command=command.strip(),
+                target_text=target_text,
             )
         )
 
@@ -142,7 +155,7 @@ def _build_messages(turns: list[EpisodeTurn]) -> list[dict[str, Any]]:
         )
         # Keep target format aligned with deployment prompt style.
         messages.append(
-            {"role": "assistant", "content": [{"type": "text", "text": f"`{turn.command}`"}]}
+            {"role": "assistant", "content": [{"type": "text", "text": turn.target_text}]}
         )
     return messages
 
@@ -175,45 +188,73 @@ def _sequence_length(model_inputs: dict[str, torch.Tensor]) -> int:
     return int(model_inputs["input_ids"].shape[1])
 
 
+def _find_subsequence(token_ids: list[int], pattern: list[int], start: int) -> int:
+    if not pattern:
+        return -1
+    last = len(token_ids) - len(pattern) + 1
+    for i in range(start, max(start, last)):
+        if token_ids[i : i + len(pattern)] == pattern:
+            return i
+    return -1
+
+
+def _build_assistant_completion_mask(
+    token_ids: list[int],
+    assistant_start_ids: list[int],
+    assistant_end_ids: list[int],
+    assistant_end_with_newline_ids: list[int],
+) -> torch.Tensor:
+    seq_len = len(token_ids)
+    mask = torch.zeros(seq_len, dtype=torch.bool)
+    if seq_len == 0:
+        return mask
+    if not assistant_start_ids or not assistant_end_ids:
+        return mask
+
+    pos = 0
+    while pos < seq_len:
+        start_idx = _find_subsequence(token_ids, assistant_start_ids, pos)
+        if start_idx < 0:
+            break
+        content_start = start_idx + len(assistant_start_ids)
+        end_ids = assistant_end_with_newline_ids or assistant_end_ids
+        end_idx = _find_subsequence(token_ids, end_ids, content_start)
+        if end_idx < 0:
+            end_ids = assistant_end_ids
+            end_idx = _find_subsequence(token_ids, end_ids, content_start)
+        if end_idx < 0:
+            break
+        if content_start < end_idx:
+            mask[content_start:end_idx] = True
+        pos = end_idx + len(end_ids)
+
+    return mask
+
+
 def _fit_turns_to_max_seq_len(
     episode_turns: list[EpisodeTurn],
     processor: AutoProcessor,
     max_turns: int,
     max_seq_len: int,
 ) -> list[EpisodeTurn]:
-    selected: list[EpisodeTurn] = []
-    for turn in episode_turns[:max_turns]:
-        candidate = selected + [turn]
+    capped = episode_turns[:max_turns]
+    if not capped:
+        return []
+
+    low = 1
+    high = len(capped)
+    best = 0
+    while low <= high:
+        mid = (low + high) // 2
+        candidate = capped[:mid]
         candidate_messages = _build_messages(candidate)
         candidate_inputs, _, _ = _encode_messages(candidate_messages, processor)
-        if _sequence_length(candidate_inputs) > max_seq_len:
-            break
-        selected = candidate
-    return selected
-
-
-def _compute_supervised_spans(
-    turns: list[EpisodeTurn],
-    processor: AutoProcessor,
-) -> tuple[str, list[Any], list[tuple[int, int]]]:
-    full_messages = _build_messages(turns)
-    full_inputs, full_text, full_images = _encode_messages(full_messages, processor)
-    full_len = _sequence_length(full_inputs)
-
-    spans: list[tuple[int, int]] = []
-    for turn_idx in range(len(turns)):
-        prefix_without_assistant = _build_messages(turns[: turn_idx + 1])[:-1]
-        prefix_with_assistant = _build_messages(turns[: turn_idx + 1])
-
-        start_inputs, _, _ = _encode_messages(prefix_without_assistant, processor)
-        end_inputs, _, _ = _encode_messages(prefix_with_assistant, processor)
-
-        start = _sequence_length(start_inputs)
-        end = min(_sequence_length(end_inputs), full_len)
-        if end > start:
-            spans.append((start, end))
-
-    return full_text, full_images, spans
+        if _sequence_length(candidate_inputs) <= max_seq_len:
+            best = mid
+            low = mid + 1
+        else:
+            high = mid - 1
+    return capped[:best]
 
 
 def _prepare_batch(
@@ -221,10 +262,12 @@ def _prepare_batch(
     processor: AutoProcessor,
     max_turns_per_sample: int,
     max_seq_len: int,
+    assistant_start_ids: list[int],
+    assistant_end_ids: list[int],
+    assistant_end_with_newline_ids: list[int],
 ) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
     texts: list[str] = []
     all_images: list[Any] = []
-    assistant_spans: list[list[tuple[int, int]]] = []
 
     for episode in batch:
         turns = _fit_turns_to_max_seq_len(
@@ -236,16 +279,18 @@ def _prepare_batch(
         if not turns:
             continue
 
-        text, images, spans = _compute_supervised_spans(turns, processor)
-        if not spans:
-            continue
-
+        messages = _build_messages(turns)
+        text = processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+        images, _ = process_vision_info(messages)
         texts.append(text)
         all_images.append(images)
-        assistant_spans.append(spans)
 
     if not texts:
-        raise ValueError("Batch produced no valid episode windows with supervised spans.")
+        raise ValueError("Batch produced no valid episode windows after max-seq filtering.")
 
     model_inputs = processor(
         text=texts,
@@ -260,12 +305,16 @@ def _prepare_batch(
 
     batch_size, max_len = input_ids.shape
     for i in range(batch_size):
-        for start, end in assistant_spans[i]:
-            if start >= max_len:
-                continue
-            end = min(end, max_len)
-            if end > start:
-                labels[i, start:end] = input_ids[i, start:end]
+        seq_len = int(model_inputs["attention_mask"][i].sum().item())
+        token_ids = input_ids[i, :seq_len].tolist()
+        assistant_mask = _build_assistant_completion_mask(
+            token_ids=token_ids,
+            assistant_start_ids=assistant_start_ids,
+            assistant_end_ids=assistant_end_ids,
+            assistant_end_with_newline_ids=assistant_end_with_newline_ids,
+        )
+        if assistant_mask.any():
+            labels[i, :seq_len][assistant_mask] = input_ids[i, :seq_len][assistant_mask]
 
     if "attention_mask" in model_inputs:
         labels = labels.masked_fill(model_inputs["attention_mask"] == 0, -100)
@@ -285,11 +334,16 @@ def train(args: argparse.Namespace) -> None:
 
     dataset_dir = Path(args.dataset_dir)
     output_dir = Path(args.output_dir)
+    existing_adapter = output_dir / "adapter_config.json"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    dataset = _load_dataset(dataset_dir)
+    dataset = _load_dataset(dataset_dir, add_reason=args.add_reason)
     model_source = _resolve_local_model_source(args.model)
     processor = AutoProcessor.from_pretrained(model_source, local_files_only=LOCAL_FILES_ONLY)
+    tokenizer = processor.tokenizer
+    assistant_start_ids = tokenizer.encode("<|im_start|>assistant\n", add_special_tokens=False)
+    assistant_end_ids = tokenizer.encode("<|im_end|>", add_special_tokens=False)
+    assistant_end_with_newline_ids = tokenizer.encode("<|im_end|>\n", add_special_tokens=False)
 
     model = AutoModelForImageTextToText.from_pretrained(
         model_source,
@@ -297,14 +351,26 @@ def train(args: argparse.Namespace) -> None:
         device_map="cuda",
         local_files_only=LOCAL_FILES_ONLY,
     )
+    model.gradient_checkpointing_enable()
+    if hasattr(model, "enable_input_require_grads"):
+        model.enable_input_require_grads()
+    if hasattr(model.config, "use_cache"):
+        model.config.use_cache = False
 
-    lora_config = LoraConfig(
-        r=16,
-        lora_alpha=32,
-        target_modules=list(TEXT_LORA_TARGET_MODULES),
-        lora_dropout=0.05,
-    )
-    model = get_peft_model(model, lora_config)
+    if existing_adapter.exists():
+        model = PeftModel.from_pretrained(
+            model,
+            str(output_dir),
+            is_trainable=True,
+        )
+        print(f"Loaded existing adapter from {output_dir.resolve()} as initialization.")
+    else:
+        lora_config = LoraConfig(
+            r=16,
+            lora_alpha=32,
+            target_modules=list(TEXT_LORA_TARGET_MODULES)
+        )
+        model = get_peft_model(model, lora_config)
 
     for name, param in model.named_parameters():
         param.requires_grad = _is_text_lora_param(name)
@@ -313,13 +379,15 @@ def train(args: argparse.Namespace) -> None:
     total_turns = sum(len(ep.turns) for ep in dataset)
     print(
         f"Loaded {len(dataset)} episodes ({total_turns} turns) from {dataset_dir}. "
-        f"Trainable params: {trainable}/{total} ({100.0 * trainable / total:.4f}%)"
+        f"Trainable params: {trainable}/{total} ({100.0 * trainable / total:.4f}%). "
+        f"Training target={'reason_text+command' if args.add_reason else 'command_only'}"
     )
 
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
         lr=args.lr,
         weight_decay=args.weight_decay,
+        fused=True
     )
 
     model.train()
@@ -350,6 +418,9 @@ def train(args: argparse.Namespace) -> None:
                 processor=processor,
                 max_turns_per_sample=args.max_turns_per_sample,
                 max_seq_len=args.max_seq_len,
+                assistant_start_ids=assistant_start_ids,
+                assistant_end_ids=assistant_end_ids,
+                assistant_end_with_newline_ids=assistant_end_with_newline_ids,
             )
             prep_dt = time.perf_counter() - prep_t0
 
@@ -426,7 +497,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-dir", type=str, default=str(DEFAULT_DATASET_DIR))
     parser.add_argument("--output-dir", type=str, default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--model", type=str, default=MODEL_NAME)
-    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--grad-accum", type=int, default=1)
     parser.add_argument("--lr", type=float, default=1e-5)
@@ -436,13 +507,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-turns-per-sample",
         type=int,
-        default=64,
+        default=16,
         help="Max turns packed from one episode into a single training sample.",
     )
     parser.add_argument(
         "--max-seq-len",
         type=int,
-        default=1024,
+        default=1536,
         help="Maximum tokenized sequence length per training sample.",
     )
     parser.add_argument(
@@ -457,6 +528,12 @@ def parse_args() -> argparse.Namespace:
         default=10,
         help="Save adapter checkpoint every N optimizer updates (0 disables periodic saves).",
     )
+    parser.add_argument(
+        "--add-reason",
+        action="store_true",
+        help="Train on reason_text targets from dataset (default: enabled).",
+    )
+    parser.set_defaults(add_reason=True)
     return parser.parse_args()
 
 

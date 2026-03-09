@@ -13,4 +13,4 @@ outputs
 dataset
 
 wandb
-adapter_policy/checkpoint_* 
+adapter_policy/*/checkpoint_*
