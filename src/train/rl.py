@@ -21,6 +21,7 @@ from .vllm_utils import (
     vllm_sleep,
 )
 
+DR_GRPO_MAX_TOKENS = int(os.getenv("DR_GRPO_MAX_TOKENS", "20"))
 MODEL_NAME = os.getenv("MODEL", "Qwen/Qwen3-VL-2B-Instruct")
 ADAPTER_PATH = os.path.abspath(os.getenv("ADAPTER_PATH", "./lora_adapter"))
 MAX_TURN_NUMBER = int(os.getenv("MAX_TURNS", "10"))
@@ -391,7 +392,7 @@ def train_step(step_idx: int):
         log_ref_over_cur = (ref - cur).clamp(-LOG_RATIO_CLAMP, LOG_RATIO_CLAMP)
         approx_kl = torch.exp(log_ref_over_cur) - log_ref_over_cur - 1.0
         # Dr. GRPO: no token-length normalization.
-        loss = ((policy_loss + KL_COEF * approx_kl) * mask).sum()
+        loss = ((policy_loss + KL_COEF * approx_kl) * mask).sum() / DR_GRPO_MAX_TOKENS
 
         loss.backward()
         torch.nn.utils.clip_grad_norm_(policy_model.parameters(), 1.0)

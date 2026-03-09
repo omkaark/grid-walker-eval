@@ -16,9 +16,10 @@ from .vllm_utils import ADAPTER_NAME
 MODEL_NAME = os.getenv("MODEL", "Qwen/Qwen3-VL-2B-Instruct")
 VLLM_BASE_URL = "http://localhost:8000/v1"
 GRID_SIZE = 8
-N_BLOCKS = 2
-MAX_PARALLEL_ROLLOUTS = int(os.getenv("MAX_PARALLEL_ROLLOUTS", 2))
+N_BLOCKS = 3
+MAX_PARALLEL_ROLLOUTS = int(os.getenv("MAX_PARALLEL_ROLLOUTS", 4))
 SHOULD_REASON = os.getenv("SHOULD_REASON", "0") == "1"
+MAX_TURNS = int(os.getenv("MAX_TURNS", "10"))
 
 async def _preflight_check_chromium() -> None:
     try:
@@ -137,7 +138,7 @@ def _count_think_turns(assistant_turns: list[str]) -> int:
 def _compute_reward(won: bool, think_turn_count: int) -> float:
     reward = 1.0 if won else 0.0
     if SHOULD_REASON:
-        reward += 0.01 * think_turn_count
+        reward += 0.1 / MAX_TURNS * think_turn_count
     return reward
 
 
