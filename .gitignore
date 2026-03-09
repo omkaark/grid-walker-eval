@@ -14,3 +14,5 @@ dataset
 
 wandb
 adapter_policy
+
+**/.cache/**
